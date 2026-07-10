@@ -9219,7 +9219,7 @@ function sendMonthlyReportWhatsApp() {
     // 🔧 الاسم مثبّت دائماً "مستر محمد السيد" — لا يعتمد على الإعدادات المحفوظة
     const teacherLine = {
         name: TEACHER_FIXED_NAME,
-        spec: _profileWA.specialization || 'أستاذ الرياضيات'
+        spec: _profileWA.specialization || 'أستاذ اللغة العربية'
     };
     const examsSection = examsAttended.length > 0
         ? examsAttended.map(r => {
@@ -9283,7 +9283,7 @@ function renderMonthlyReportBody() {
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(s.grade)) : null;
 
     // ── Header info ──
-    document.getElementById('report-teacher-name').innerText = `المدرّس: ${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ الرياضيات'}`;
+    document.getElementById('report-teacher-name').innerText = `المدرّس: ${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ اللغة العربية'}`;
     document.getElementById('report-date-range').innerText = `للفترة: ${period.label}`;
     document.getElementById('rep-st-name').innerText = s.name;
     document.getElementById('rep-st-code').innerText = s.qrCode || '---';
@@ -10270,28 +10270,28 @@ function getProgramProfile() {
         db._settings.appProfile = {
             centerName: 'مستر محمد السيد',
             teacherName: 'مستر محمد السيد',
-            specialization: 'أستاذ الرياضيات',
+            specialization: 'أستاذ اللغة العربية',
             phone: ''
         };
     }
     // ✅ توافق مع الملفات القديمة: تأكد من وجود التخصص دائماً
     if (!db._settings.appProfile.specialization) {
-        db._settings.appProfile.specialization = 'أستاذ الرياضيات';
+        db._settings.appProfile.specialization = 'أستاذ اللغة العربية';
     }
 
-    // 🔧 إصلاح: تصحيح تلقائي لأي قيمة خاطئة محفوظة سابقاً باسم المدرّس
-    // (مثل "مدير عام"/"المدير العام" أو حقل فارغ). اسم المدرّس الصحيح دائماً
-    // هو "مستر محمد السيد" — لا يجوز أن يظهر أي لقب وظيفي عام مكانه.
-    // ملحوظة: التحقق يعتمد على وجود كلمة "مدير" كجزء من النص فقط (بدون تقييد
-    // بما يليها) حتى يلتقط كل الصيغ: "مدير"، "المدير"، "مدير عام"، "المدير العام".
-    const isBadValue = (v) => !v || /مدير/.test(String(v).trim());
+    // 🔧 إصلاح ثابت: اسم المدرّس وتخصصه مثبّتان دائماً على "مستر محمد السيد"
+    // و"أستاذ اللغة العربية" — بغض النظر عن أي قيمة محفوظة سابقاً في
+    // localStorage/IndexedDB (سواء كانت لقب وظيفي خاطئ زي "المشرف"، أو حتى
+    // اسم/تخصص حقيقي مختلف تم إدخاله بالغلط من قبل). العملية دي بتضمن إن
+    // الاسم والتخصص ميظهروش غلط في أي مكان بالتطبيق (التقارير، الواتساب،
+    // شاشة الإعدادات...) حتى لو فيه بيانات قديمة متخزّنة فعليًا.
     let fixedSomething = false;
-    if (isBadValue(db._settings.appProfile.teacherName)) {
+    if (db._settings.appProfile.teacherName !== 'مستر محمد السيد') {
         db._settings.appProfile.teacherName = 'مستر محمد السيد';
         fixedSomething = true;
     }
-    if (isBadValue(db._settings.appProfile.specialization)) {
-        db._settings.appProfile.specialization = 'أستاذ الرياضيات';
+    if (db._settings.appProfile.specialization !== 'أستاذ اللغة العربية') {
+        db._settings.appProfile.specialization = 'أستاذ اللغة العربية';
         fixedSomething = true;
     }
     if (fixedSomething) {
@@ -10309,7 +10309,7 @@ function getProgramProfile() {
 const TEACHER_FIXED_NAME = 'مستر محمد السيد';
 function getTeacherSignatureLine() {
     const profile = getProgramProfile();
-    const spec = profile.specialization || 'أستاذ الرياضيات';
+    const spec = profile.specialization || 'أستاذ اللغة العربية';
     // توقيع أنيق بخط فاصل يميّز نهاية الرسالة
     return `\n\n━━━━━━━━━━━━━━\n*${TEACHER_FIXED_NAME}*\n${spec}`;
 }
@@ -10457,7 +10457,7 @@ function viewFinancialEditLog() {
             th { background:#4f46e5; color:#fff; }
         </style></head><body>
         <h2><i class="fas fa-history"></i> سجل التعديلات المالية على الأرشيف</h2>
-        <div class="sub">${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ الرياضيات'}</div>
+        <div class="sub">${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ اللغة العربية'}</div>
         <table>
             <thead><tr>
                 <th>اسم الطالب</th><th>الشهر / الدورة</th><th>الحالة القديمة</th><th>الحالة الجديدة</th>
@@ -10483,7 +10483,7 @@ function applyProgramProfile() {
     if (userName) userName.innerText = profile.teacherName || 'مستر محمد السيد';
 
     const userSpec = document.querySelector('.user-profile .user-specialization');
-    if (userSpec) userSpec.innerText = profile.specialization || 'أستاذ الرياضيات';
+    if (userSpec) userSpec.innerText = profile.specialization || 'أستاذ اللغة العربية';
 }
 
 function initProgramSettings() {
@@ -10535,7 +10535,7 @@ function ensureSettingsSection() {
                 </div>
                 <div class="settings-row">
                     <label for="settings-specialization">التخصص / الوظيفة</label>
-                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: أستاذ الرياضيات">
+                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: أستاذ اللغة العربية">
                 </div>
                 <div class="settings-row">
                     <label for="settings-phone">رقم التواصل</label>
@@ -10702,7 +10702,7 @@ function saveProgramSettings() {
     const profile = getProgramProfile();
     profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'مستر محمد السيد';
     profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'مستر محمد السيد';
-    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'أستاذ الرياضيات';
+    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'أستاذ اللغة العربية';
     profile.phone = document.getElementById('settings-phone')?.value.trim() || '';
 
     const monthlyFee = parseFloat(document.getElementById('settings-monthly-fee')?.value || '0');
@@ -11240,7 +11240,7 @@ function generatePrintableIDCards(students, mode = 'normal') {
     const isThermal = mode === 'thermal';
     const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : {};
     const teacherName = profile.teacherName || 'مستر محمد السيد';
-    const teacherSpec = profile.specialization || 'أستاذ الرياضيات';
+    const teacherSpec = profile.specialization || 'أستاذ اللغة العربية';
 
     // Get Thermal Config
     const tw = document.getElementById('thermal-w')?.value || 80;
