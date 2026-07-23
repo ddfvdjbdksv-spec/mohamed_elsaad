@@ -2137,7 +2137,7 @@ async function handleStudentSubmit(printAfter = false) {
 
         db.students.push(student);
         await StorageEngine.save('students', student);
-        waitForCloudTableSync('students');
+        const studentCloudOk = await waitForCloudTableSync('students');
 
         studentListPage = 0;
         renderStudents();
@@ -2159,7 +2159,7 @@ async function handleStudentSubmit(printAfter = false) {
                 };
                 db.attendance.push(att);
                 await StorageEngine.save('attendance', att);
-                waitForCloudTableSync('attendance');
+                await waitForCloudTableSync('attendance');
             }
         }
 
@@ -2170,7 +2170,11 @@ async function handleStudentSubmit(printAfter = false) {
         document.getElementById('std-group').value = '';
 
         toggleModal('student-modal', false);
-        showNotification('تم حفظ الطالب بنجاح. المزامنة مع قاعدة البيانات تعمل تلقائياً في الخلفية.', 'success');
+        if (studentCloudOk) {
+            showNotification('تم إضافة الطالب وحفظه في قاعدة البيانات بنجاح', 'success');
+        } else {
+            showNotification('تم حفظ الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات. تأكد من الاتصال واضغط مزامنة.', 'warning');
+        }
 
         // ✅ لو المستخدم ضغط "حفظ وطباعة الكود" — نفتح الطباعة فورًا لنفس الطالب
         if (printAfter && typeof generatePrintableIDCards === 'function') {
@@ -6674,8 +6678,8 @@ function sendStudentQRWhatsApp(type) {
     const studentUrl = `${baseDir}student-report.html?student=${s.id}`;
 
     const profile = typeof getProgramProfile === 'function' ? getProgramProfile() : {};
-    const teacherName = typeof getTeacherDisplayName === 'function' ? getTeacherDisplayName() : 'الأستاذ محمد السيد';
-    const spec = profile.specialization || 'مدرس اللغة العربية';
+    const teacherName = typeof getTeacherDisplayName === 'function' ? getTeacherDisplayName() : 'أستاذ المادة';
+    const spec = profile.specialization || 'مدرس لغة إنجليزية';
 
     let msg = '';
     if (typeof buildFormalParentMessage === 'function') {
@@ -7301,7 +7305,7 @@ function _printDailyTreasuryCurrentGroup() {
         <body>
             <div class="header">
                 <h1>💰 كشف تحصيل اليوم</h1>
-                <p>${profile.centerName || 'نظام محمد السيد'}</p>
+                <p>${profile.centerName || 'مستر محمد سليمان'}</p>
                 <p>${todayStrAr}</p>
                 <p>${gradeObj ? gradeObj.name : ''}${groupObj ? ' — ' + groupObj.name : ''}</p>
             </div>
@@ -7476,7 +7480,7 @@ function _printDailyTreasuryAllGroups() {
         <body>
             <div class="main-header">
                 <h1>🖨️ كشف تحصيل جميع المجموعات</h1>
-                <p>${profile.centerName || 'نظام محمد السيد'}</p>
+                <p>${profile.centerName || 'مستر محمد سليمان'}</p>
                 <p>${todayStrAr}</p>
             </div>
             <div class="grand-summary">
@@ -8584,7 +8588,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
         </head>
         <body>
             <div class="center">
-                <h3 style="margin:5px 0; font-size:15px;">نظام محمد السيد</h3>
+                <h3 style="margin:5px 0; font-size:15px;">مستر محمد سليمان</h3>
                 <div style="font-size:11px; color:#555;">${cycleTitle}</div>
             </div>
             <hr>
@@ -8738,7 +8742,7 @@ function _buildBulkReceiptCard(payment) {
     return `
         <div class="bulk-receipt-card">
             <div class="bc-header">
-                <span class="bc-center">${profile.centerName || 'نظام محمد السيد'}</span>
+                <span class="bc-center">${profile.centerName || 'مستر محمد سليمان'}</span>
                 <span class="bc-num">#${payment.id}</span>
             </div>
             <div class="bc-row"><span class="bc-label">الطالب</span><span class="bc-value">${student.name}</span></div>
@@ -9373,7 +9377,7 @@ function sendMonthlyReportWhatsApp() {
     // 🔧 الاسم مثبّت دائماً "نظام إدارة الدروس" — لا يعتمد على الإعدادات المحفوظة
     const teacherLine = {
         name: getTeacherDisplayName(),
-        spec: _profileWA.specialization || 'مدرس اللغة العربية'
+        spec: _profileWA.specialization || 'مدرس لغة إنجليزية'
     };
     const examsSection = examsAttended.length > 0
         ? examsAttended.map(r => {
@@ -9437,7 +9441,7 @@ function renderMonthlyReportBody() {
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(s.grade)) : null;
 
     // ── Header info ──
-    document.getElementById('report-teacher-name').innerText = `${getTeacherDisplayName()} — ${profile.specialization || 'مدرس اللغة العربية'}`;
+    document.getElementById('report-teacher-name').innerText = `${getTeacherDisplayName()} — ${profile.specialization || 'مدرس لغة إنجليزية'}`;
     document.getElementById('report-date-range').innerText = `للفترة: ${period.label}`;
     document.getElementById('rep-st-name').innerText = s.name;
     document.getElementById('rep-st-code').innerText = s.qrCode || '---';
@@ -10402,9 +10406,9 @@ function initExperienceEnhancements() {
 function getProgramProfile() {
     if (!db._settings.appProfile) {
         db._settings.appProfile = {
-            centerName: 'نظام محمد السيد',
-            teacherName: 'الأستاذ محمد السيد',
-            specialization: 'مدرس اللغة العربية',
+            centerName: 'مستر محمد سليمان',
+            teacherName: 'مستر محمد سليمان',
+            specialization: 'مدرس لغة إنجليزية',
             phone: '',
             absenceMessage: 'السلام عليكم ورحمة الله وبركاته،\nنحيط سيادتكم علماً بأن الطالب/ـة {StudentName} لم يحضر/تحضر الحصة الدراسية اليوم.\nنرجو التكرم بمتابعة سبب الغياب.',
             reportMessage: 'السلام عليكم ورحمة الله وبركاته،\nنرفق لسيادتكم تقرير الأداء الشهري للطالب/ـة {StudentName}.\nنسأل الله لابنكم/ابنتكم دوام التوفيق والنجاح.'
@@ -10412,7 +10416,7 @@ function getProgramProfile() {
     }
     // ✅ توافق مع الملفات القديمة: تأكد من وجود الحقول الجديدة دائماً
     if (!db._settings.appProfile.specialization || db._settings.appProfile.specialization === 'أستاذ الرياضيات') {
-        db._settings.appProfile.specialization = 'مدرس اللغة العربية';
+        db._settings.appProfile.specialization = 'مدرس لغة إنجليزية';
     }
     if (db._settings.appProfile.absenceMessage === undefined) {
         db._settings.appProfile.absenceMessage = 'السلام عليكم ورحمة الله وبركاته،\nنحيط سيادتكم علماً بأن الطالب/ـة {StudentName} لم يحضر/تحضر الحصة الدراسية اليوم.\nنرجو التكرم بمتابعة سبب الغياب.';
@@ -10420,11 +10424,11 @@ function getProgramProfile() {
     if (db._settings.appProfile.reportMessage === undefined) {
         db._settings.appProfile.reportMessage = 'السلام عليكم ورحمة الله وبركاته،\nنرفق لسيادتكم تقرير الأداء الشهري للطالب/ـة {StudentName}.\nنسأل الله لابنكم/ابنتكم دوام التوفيق والنجاح.';
     }
-    if (!db._settings.appProfile.teacherName || db._settings.appProfile.teacherName === 'نظام إدارة الدروس') {
-        db._settings.appProfile.teacherName = 'الأستاذ محمد السيد';
+    if (!db._settings.appProfile.teacherName || db._settings.appProfile.teacherName === 'نظام إدارة الدروس' || db._settings.appProfile.teacherName === 'سنتر العباقرة') {
+        db._settings.appProfile.teacherName = 'مستر محمد سليمان';
     }
-    if (!db._settings.appProfile.centerName || String(db._settings.appProfile.centerName).includes('العباقرة')) {
-        db._settings.appProfile.centerName = 'نظام محمد السيد';
+    if (!db._settings.appProfile.centerName || db._settings.appProfile.centerName === 'نظام إدارة الدروس' || db._settings.appProfile.centerName === 'سنتر العباقرة') {
+        db._settings.appProfile.centerName = 'مستر محمد سليمان';
     }
 
     return db._settings.appProfile;
@@ -10433,7 +10437,7 @@ function getProgramProfile() {
 /** يعيد اسم المدرس المحفوظ في الإعدادات، أو نص بديل إن لم يُعيَّن */
 function getTeacherDisplayName() {
     const profile = getProgramProfile();
-    return (profile.teacherName && profile.teacherName.trim()) ? profile.teacherName.trim() : 'الأستاذ محمد السيد';
+    return (profile.teacherName && profile.teacherName.trim()) ? profile.teacherName.trim() : 'مستر محمد سليمان';
 }
 
 /** يعيد نص رسالة الغياب بعد استبدال {StudentName} باسم الطالب */
@@ -10455,7 +10459,7 @@ function buildReportMessageForStudent(studentName) {
 function getTeacherSignatureLine() {
     const name = getTeacherDisplayName();
     const profile = getProgramProfile();
-    const spec = profile.specialization || 'مدرس اللغة العربية';
+    const spec = profile.specialization || 'مدرس لغة إنجليزية';
     return `\n\n━━━━━━━━━━━━━━\n*${name}*\n${spec}`;
 }
 // للتوافق مع الأكواد القديمة التي تستخدم TEACHER_FIXED_NAME مباشرة
@@ -10609,7 +10613,7 @@ function viewFinancialEditLog() {
             th { background:#4f46e5; color:#fff; }
         </style></head><body>
         <h2><i class="fas fa-history"></i> سجل التعديلات المالية على الأرشيف</h2>
-        <div class="sub">${getTeacherDisplayName()} — ${profile.specialization || 'مدرس اللغة العربية'}</div>
+        <div class="sub">${getTeacherDisplayName()} — ${profile.specialization || 'مدرس لغة إنجليزية'}</div>
         <table>
             <thead><tr>
                 <th>اسم الطالب</th><th>الشهر / الدورة</th><th>الحالة القديمة</th><th>الحالة الجديدة</th>
@@ -10629,13 +10633,13 @@ function applyProgramProfile() {
     document.title = `${profile.centerName} | نظام الإدارة`;
 
     const logo = document.querySelector('.logo');
-    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'نظام محمد السيد'}`;
+    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'مستر محمد سليمان'}`;
 
     const userName = document.querySelector('.user-profile span');
     if (userName) userName.innerText = getTeacherDisplayName();
 
     const userSpec = document.querySelector('.user-profile .user-specialization');
-    if (userSpec) userSpec.innerText = profile.specialization || 'مدرس اللغة العربية';
+    if (userSpec) userSpec.innerText = profile.specialization || 'مدرس لغة إنجليزية';
 }
 
 function initProgramSettings() {
@@ -10683,11 +10687,11 @@ function ensureSettingsSection() {
                 </div>
                 <div class="settings-row">
                     <label for="settings-teacher-name">اسم المدرس</label>
-                    <input id="settings-teacher-name" class="form-input" type="text" placeholder="مثال: الأستاذ محمد السيد">
+                    <input id="settings-teacher-name" class="form-input" type="text" placeholder="مثال: محمد أحمد">
                 </div>
                 <div class="settings-row">
                     <label for="settings-specialization">التخصص / الوظيفة</label>
-                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: مدرس اللغة العربية">
+                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: مدرس لغة إنجليزية">
                 </div>
                 <div class="settings-row">
                     <label for="settings-phone">رقم التواصل</label>
@@ -10880,10 +10884,10 @@ function renderProgramSettings() {
 
 function saveProgramSettings() {
     const profile = getProgramProfile();
-    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'نظام محمد السيد';
+    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'نظام إدارة الدروس';
     // ✅ اسم المدرس يُحفظ من حقل الإدخال مباشرة (يُدخله المدير مرة واحدة)
-    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'الأستاذ محمد السيد';
-    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'مدرس اللغة العربية';
+    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || '';
+    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'مدرس لغة إنجليزية';
     profile.phone = document.getElementById('settings-phone')?.value.trim() || '';
 
     // ✅ حفظ نصوص الرسائل
@@ -11560,7 +11564,7 @@ function generatePrintableIDCards(students, mode = 'normal') {
 
                 html += '<div class="card">' +
                     '<div class="card-header">' +
-                    '<div class="teacher-name">نظام محمد السيد</div>' +
+                    '<div class="teacher-name">مستر محمد سليمان</div>' +
                     '<div class="grade-badge">' + gradeName + '</div>' +
                     '</div>' +
                     '<div class="card-body">' +
@@ -11776,10 +11780,7 @@ async function waitForCloudTableSync(table) {
         return false;
     }
     try {
-        await Promise.race([
-            CloudSync.syncTableNow(table),
-            new Promise(resolve => setTimeout(resolve, 2500))
-        ]);
+        await CloudSync.syncTableNow(table);
         return true;
     } catch (err) {
         console.warn('[CloudSync] immediate table sync failed', table, err);
@@ -11884,12 +11885,16 @@ async function handleStudentUpdate(printAfter = false) {
     student.parentPhone = parent;
 
     await StorageEngine.save('students', student);
-    waitForCloudTableSync('students');
+    const studentCloudOk = await waitForCloudTableSync('students');
 
     const idx = db.students.findIndex(s => s.id == id);
     if (idx !== -1) db.students[idx] = student;
 
-    showNotification('تم تحديث بيانات الطالب بنجاح. المزامنة تعمل تلقائياً في الخلفية.', 'success');
+    if (studentCloudOk) {
+        showNotification('تم تحديث بيانات الطالب في قاعدة البيانات بنجاح', 'success');
+    } else {
+        showNotification('تم تحديث الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات.', 'warning');
+    }
     toggleModal('edit-student-modal', false);
     renderStudents();
 
