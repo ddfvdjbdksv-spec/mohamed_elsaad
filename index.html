@@ -7,8 +7,8 @@
     <meta name="theme-color" content="#4f46e5">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="نظام محمد السيد">
-    <title>نظام محمد السيد</title>
+    <meta name="apple-mobile-web-app-title" content="مستر محمد سليمان">
+    <title>مستر محمد سليمان</title>
     <style>
         .search-results-dropdown {
             position: absolute;
@@ -103,7 +103,7 @@
                 <div class="splash-logo" style="margin-bottom: 1.5rem;">
                     <i class="fas fa-university"></i>
                 </div>
-                <h1 class="splash-title">نظام محمد السيد</h1>
+                <h1 class="splash-title">محمد سيد مدرس اللغة العربية</h1>
                 <p class="splash-subtitle">نظام الإدارة المتكامل</p>
 
                 <div id="password-screen">
@@ -163,7 +163,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
         <div class="logo">
-            <i class="fas fa-book-open"></i> نظام محمد السيد
+            <i class="fas fa-book-open"></i> مستر محمد سليمان
         </div>
         <div id="current-grade-badge"
             style="text-align: center; margin-bottom: 1.5rem; padding: 0.5rem; background: var(--bg-light); border-radius: 10px; font-weight: 700; color: var(--primary);">
@@ -364,9 +364,9 @@
                         ... الدراسية</div>
                     <div class="avatar">M</div>
                     <div style="display:flex; flex-direction:column; line-height:1.2;">
-                        <span style="font-weight: 600;">الأستاذ محمد السيد</span>
+                        <span style="font-weight: 600;">مستر محمد سليمان</span>
                         <small class="user-specialization"
-                            style="font-size:0.65rem; opacity:0.7; font-weight:400;">مدرس اللغة العربية</small>
+                            style="font-size:0.65rem; opacity:0.7; font-weight:400;">مدرس لغة إنجليزية</small>
                     </div>
                 </div>
             </div>
@@ -3443,14 +3443,14 @@
         <!-- Data file - must be loaded BEFORE app.js -->
         <script src="firebase-app-compat.js"></script>
         <script src="firebase-firestore-compat.js"></script>
-        <script src="firebase-sync.js?v=6"></script>
         <script src="data.js?v=3" onerror="console.warn('data.js not found - fresh install mode');"></script>
         <script src="grade-mapping.js"></script>
         <script src="category-system.js"></script>
         <script src="code-generator.js"></script>
         <script src="archive_functions.js?v=5"></script>
-        <script src="app.js?v=12"></script>
+        <script src="app.js?v=10"></script>
         <script src="user-management.js?v=2"></script>
+        <script src="firebase-sync.js?v=4"></script>
         <script src="pending-operations-display.js"></script>
         <script src="platform-subscriptions.js?v=2"></script>
         <script src="transfer-student.js?v=2"></script>
@@ -3744,26 +3744,20 @@
         <script>
             /* ── PWA Install Logic ─── */
             let _deferredPrompt = null;
-            function isAppStandalone() {
-                return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-            }
-            function updatePWAInstallButton() {
-                const btn = document.getElementById('pwa-install-btn');
-                if (!btn) return;
-                btn.style.display = isAppStandalone() ? 'none' : 'flex';
-            }
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault();
                 _deferredPrompt = e;
-                updatePWAInstallButton();
+                const btn = document.getElementById('pwa-install-btn');
+                if (btn) btn.style.display = 'flex';
             });
             window.addEventListener('appinstalled', () => {
                 _deferredPrompt = null;
-                updatePWAInstallButton();
+                const btn = document.getElementById('pwa-install-btn');
+                if (btn) btn.style.display = 'none';
             });
             async function triggerPWAInstall() {
                 if (!_deferredPrompt) {
-                    if (isAppStandalone()) {
+                    if (window.matchMedia('(display-mode: standalone)').matches) {
                         alert('التطبيق مثبت بالفعل! ✅');
                     } else {
                         alert('لتثبيت التطبيق يدوياً:\n\nأندرويد Chrome: اضغط ⋮ → "إضافة إلى الشاشة الرئيسية"\nآيفون Safari: اضغط Share → "Add to Home Screen"');
@@ -3776,7 +3770,6 @@
                 const btn = document.getElementById('pwa-install-btn');
                 if (btn) btn.style.display = 'none';
             }
-            updatePWAInstallButton();
         </script>
 
 </body>

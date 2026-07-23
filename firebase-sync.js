@@ -56,7 +56,6 @@ const CloudSync = (() => {
     let hashes = {};              // { table: { id: hash } , __settings: hash }
     let rerenderTimer = null;
     let statusEl = null;
-    let inFlightPushes = {};
 
     let isFreshSync = false;
 
@@ -81,23 +80,11 @@ const CloudSync = (() => {
         for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; }
         return h + '_' + str.length;
     }
-    // Firestore بيرفض قيم undefined — ننضّف الكائن محلياً وعميقاً لكل الكائنات والـ arrays المتداخلة
-    function deepSanitize(obj) {
-        if (obj === null || obj === undefined) return null;
-        if (typeof obj !== 'object') return obj;
-        if (Array.isArray(obj)) {
-            return obj.filter(v => v !== undefined).map(deepSanitize);
-        }
-        const out = {};
-        Object.keys(obj).forEach(k => {
-            if (obj[k] !== undefined) {
-                out[k] = deepSanitize(obj[k]);
-            }
-        });
-        return out;
-    }
+    // Firestore بيرفض قيم undefined — لازم ننضّف الكائن قبل الإرسال
     function sanitize(obj) {
-        return deepSanitize(obj) || {};
+        const out = {};
+        Object.keys(obj || {}).forEach(k => { if (obj[k] !== undefined) out[k] = obj[k]; });
+        return out;
     }
 
     // ── مؤشر الحالة الصغير في الواجهة (متصل / غير متصل / مزامنة) ──
@@ -126,18 +113,7 @@ const CloudSync = (() => {
     const TABLE_UI_REFRESH_MAP = {
         students: [
             () => { if (typeof window.renderStudents === 'function') window.renderStudents(); },
-            () => { if (typeof window.renderGroups === 'function') window.renderGroups(); },
             () => { if (typeof window.renderGroupStudents === 'function') window.renderGroupStudents(); },
-            () => {
-                if (typeof window.activeGroupDetailId !== 'undefined' && window.activeGroupDetailId && typeof window.updateGroupDetailStats === 'function') {
-                    window.updateGroupDetailStats(window.activeGroupDetailId);
-                }
-            },
-            () => {
-                if (typeof window.currentGrade !== 'undefined' && window.currentGrade && typeof window.renderPortalGroups === 'function') {
-                    window.renderPortalGroups(window.currentGrade);
-                }
-            },
             () => { if (typeof window.updateDashboardStats === 'function') window.updateDashboardStats(); }
         ],
         groups: [
@@ -193,11 +169,7 @@ const CloudSync = (() => {
         if (table) pendingTableRefreshes.add(table);
         clearTimeout(rerenderTimer);
         rerenderTimer = setTimeout(() => {
-            const globals = [
-                'syncUIWithContext', 'renderMonthlySubscriptionTables', 'renderSubscriptionTracker',
-                'updateDashboardStats', 'renderStudents', 'renderGroups',
-                'refreshGroupContexts', 'renderPortalAttendance'
-            ];
+            const globals = ['syncUIWithContext', 'renderMonthlySubscriptionTables', 'renderSubscriptionTracker', 'updateDashboardStats'];
             globals.forEach(fn => { try { if (typeof window[fn] === 'function') window[fn](); } catch (e) { } });
 
             pendingTableRefreshes.forEach(t => {
@@ -233,43 +205,35 @@ const CloudSync = (() => {
         const arr = db[table];
         if (!Array.isArray(arr)) return 0;
 
-        if (inFlightPushes[table]) return inFlightPushes[table];
+        if (!hashes[table]) hashes[table] = {};
+        const tableHashes = hashes[table];
+        const currentIds = new Set();
+        const ops = []; // { type, id, data, newHash }
 
-        const pushPromise = (async () => {
-            try {
-                if (!hashes[table]) hashes[table] = {};
-                const tableHashes = hashes[table];
-                const currentIds = new Set();
-                const ops = []; // { type, id, data, newHash }
-
-                arr.forEach(rec => {
-                    if (rec == null || rec.id === undefined || rec.id === null) return;
-                    const id = String(rec.id);
-                    currentIds.add(id);
-                    const h = hashOf(rec);
-                    if (tableHashes[id] !== h) {
-                        ops.push({ type: 'set', id, data: rec, newHash: h });
-                    }
-                });
-
-                if (!isFreshSync && arr.length > 0) {
-                    Object.keys(tableHashes).forEach(id => {
-                        if (!currentIds.has(id)) {
-                            ops.push({ type: 'delete', id });
-                        }
-                    });
-                }
-
-                if (!ops.length) return 0;
-                await flushOps(table, ops);
-                return ops.length;
-            } finally {
-                delete inFlightPushes[table];
+        arr.forEach(rec => {
+            if (rec == null || rec.id === undefined || rec.id === null) return;
+            const id = String(rec.id);
+            currentIds.add(id);
+            const h = hashOf(rec);
+            if (tableHashes[id] !== h) {
+                ops.push({ type: 'set', id, data: rec, newHash: h });
             }
-        })();
+        });
 
-        inFlightPushes[table] = pushPromise;
-        return pushPromise;
+        // الحذف: أي id كان موجود قبل كده وبقى مش موجود دلوقتي
+        // ⚠️ حماية: لا نحذف من Firestore لو كانت هذه أول مزامنة (isFreshSync)
+        // أو لو عدد السجلات المحلية صفر (لم تكتمل البيانات من IndexedDB بعد)
+        if (!isFreshSync && arr.length > 0) {
+            Object.keys(tableHashes).forEach(id => {
+                if (!currentIds.has(id)) {
+                    ops.push({ type: 'delete', id });
+                }
+            });
+        }
+
+        if (!ops.length) return 0;
+        await flushOps(table, ops); // الـ hash بيتحدّث جوه flushOps بعد نجاح الكتابة فعليًا فقط
+        return ops.length;
     }
 
     async function pushSettings() {
@@ -430,173 +394,6 @@ const CloudSync = (() => {
         return true;
     }
 
-    function normalizeRemoteRecord(table, docData, docId) {
-        const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : docId;
-        const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
-        const data = { ...docData, id: numericId };
-        delete data._syncedAt;
-        delete data._sourceTable;
-        delete data._rowIndex;
-        delete data._migrationId;
-
-        if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
-            data.grade = normalizeImportedStudentGrade(data);
-        } else if (table === 'groups' && typeof normalizeGrade === 'function') {
-            if (data.grade) data.grade = normalizeGrade(data.grade);
-        }
-        return data;
-    }
-
-    function mergeSettingsFromMigration(settings) {
-        if (!settings || typeof settings !== 'object') return false;
-        db._settings = { ...(db._settings || {}), ...settings };
-        try { localStorage.setItem('edu_master_settings', JSON.stringify(db._settings)); } catch (e) { }
-        hashes.__settings = hashOf(db._settings);
-        return true;
-    }
-
-    function applyGradesListFromMigration(grades) {
-        if (!Array.isArray(grades) || !grades.length) return false;
-        try {
-            if (typeof buildGradesList === 'function') {
-                window.gradesList = buildGradesList(grades);
-            } else {
-                window.gradesList = grades;
-            }
-            if (typeof gradesList !== 'undefined') gradesList = window.gradesList;
-            localStorage.setItem('edu_grades_list', JSON.stringify(window.gradesList));
-            return true;
-        } catch (e) {
-            console.warn('[CloudSync] failed to apply migrated gradesList', e);
-            return false;
-        }
-    }
-
-    async function readMigrationMeta(migrationId) {
-        try {
-            const chunksSnap = await fsDB
-                .collection('offline_migrations').doc(migrationId)
-                .collection('metaChunks')
-                .orderBy('index')
-                .get();
-            if (chunksSnap.empty) return null;
-            let json = '';
-            chunksSnap.forEach(doc => { json += String((doc.data() || {}).chunk || ''); });
-            return JSON.parse(json || '{}');
-        } catch (e) {
-            console.warn('[CloudSync] could not read migration meta chunks', migrationId, e);
-            return null;
-        }
-    }
-
-    async function importOfflineMigration(migrationDoc) {
-        const migrationId = migrationDoc.id;
-        const importRef = fsDB.collection('meta').doc('offlineMigrationImports').collection('items').doc(migrationId);
-        const alreadyImported = await importRef.get();
-        if (alreadyImported.exists) return { migrationId, skipped: true, importedRows: 0 };
-
-        const migrationData = migrationDoc.data() || {};
-        console.log('[CloudSync] importing offline migration:', migrationId, migrationData);
-        setStatus('syncing');
-        applyingRemote = true;
-
-        const report = {};
-        let importedRows = 0;
-
-        for (const table of SYNC_TABLES) {
-            const rowsSnap = await fsDB
-                .collection('offline_migrations').doc(migrationId)
-                .collection('tables').doc(table)
-                .collection('rows')
-                .get();
-            if (rowsSnap.empty) {
-                report[table] = 0;
-                continue;
-            }
-
-            const remoteArr = [];
-            rowsSnap.forEach(doc => {
-                remoteArr.push(normalizeRemoteRecord(table, doc.data() || {}, doc.id));
-            });
-
-            for (let i = 0; i < remoteArr.length; i += 400) {
-                const batch = fsDB.batch();
-                remoteArr.slice(i, i + 400).forEach(data => {
-                    batch.set(fsDB.collection(table).doc(String(data.id)), {
-                        ...sanitize(data),
-                        _syncedAt: Date.now(),
-                        _migrationId: migrationId,
-                    }, { merge: true });
-                });
-                await batch.commit();
-            }
-
-            await mergeRemoteTable(table, remoteArr);
-            report[table] = remoteArr.length;
-            importedRows += remoteArr.length;
-            queueTableUIRefresh(table);
-        }
-
-        const meta = await readMigrationMeta(migrationId);
-        const settingsImported = meta ? mergeSettingsFromMigration(meta.settings) : false;
-        const gradesImported = meta ? applyGradesListFromMigration(meta.gradesList) : false;
-        if (settingsImported) {
-            await fsDB.collection('meta').doc('settings')
-                .set({ ...sanitize(db._settings), _syncedAt: Date.now(), _migrationId: migrationId }, { merge: true });
-        }
-
-        await importRef.set({
-            migrationId,
-            importedAt: Date.now(),
-            importedRows,
-            sourceProjectId: migrationData.projectId || null,
-            report,
-            settingsImported,
-            gradesImported,
-        }, { merge: true });
-
-        applyingRemote = false;
-        saveHashes();
-        console.log('[CloudSync] offline migration imported:', { migrationId, importedRows, report });
-        return { migrationId, skipped: false, importedRows, report };
-    }
-
-    async function importPendingOfflineMigrations() {
-        try {
-            const snap = await fsDB.collection('offline_migrations').get();
-            if (snap.empty) return [];
-
-            const candidates = [];
-            snap.forEach(doc => {
-                const data = doc.data() || {};
-                if (!data.status || data.status === 'completed') {
-                    candidates.push({ doc, completedAt: data.completedAt || data.startedAt || '' });
-                }
-            });
-            candidates.sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)));
-
-            const results = [];
-            for (const item of candidates) {
-                results.push(await importOfflineMigration(item.doc));
-            }
-
-            const imported = results.filter(r => !r.skipped);
-            if (imported.length) {
-                const total = imported.reduce((sum, r) => sum + (r.importedRows || 0), 0);
-                console.log(`[CloudSync] imported ${imported.length} offline migration(s), ${total} rows`);
-                if (typeof showNotification === 'function') {
-                    showNotification(`تم استقبال بيانات الترحيل من Firebase (${total.toLocaleString()} سجل)`, 'success');
-                }
-            }
-            return results;
-        } catch (e) {
-            console.warn('[CloudSync] importPendingOfflineMigrations warning:', e);
-            return [];
-        } finally {
-            applyingRemote = false;
-        }
-    }
-
     // ── جلب يدوي بزر — دمج البيانات المحلية مع بيانات السحابة دون مسح التعديلات المحلية ──
     async function manualPullFromCloud() {
         if (!ready) {
@@ -617,18 +414,10 @@ const CloudSync = (() => {
                 const snap = await fsDB.collection(table).get({ source: 'server' });
                 const remoteArr = [];
                 snap.forEach(doc => {
-                    const docData = doc.data() || {};
-                    const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : doc.id;
+                    const rawId = doc.id;
                     const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
-                    const data = { ...docData, id: numericId };
+                    const data = { ...doc.data(), id: numericId };
                     delete data._syncedAt;
-
-                    if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
-                        data.grade = normalizeImportedStudentGrade(data);
-                    } else if (table === 'groups' && typeof normalizeGrade === 'function') {
-                        if (data.grade) data.grade = normalizeGrade(data.grade);
-                    }
-
                     remoteArr.push(data);
                 });
 
@@ -683,11 +472,10 @@ const CloudSync = (() => {
     // ============================================================
 
     function applyRemoteDocChange(table, change) {
-        if (!Array.isArray(db[table])) db[table] = [];
         const arr = db[table];
+        if (!Array.isArray(arr)) return false;
 
-        const docData = change.doc.data() || {};
-        const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : change.doc.id;
+        const rawId = change.doc.id;
         const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
         const strId = String(numericId);
 
@@ -701,14 +489,8 @@ const CloudSync = (() => {
             return true;
         }
 
-        const data = { ...docData, id: numericId };
+        const data = { ...change.doc.data(), id: numericId };
         delete data._syncedAt;
-
-        if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
-            data.grade = normalizeImportedStudentGrade(data);
-        } else if (table === 'groups' && typeof normalizeGrade === 'function') {
-            if (data.grade) data.grade = normalizeGrade(data.grade);
-        }
 
         const idx = arr.findIndex(r => String(r.id) === strId);
         if (idx > -1) {
@@ -781,22 +563,16 @@ const CloudSync = (() => {
                 const snap = await fsDB.collection(table).get();
                 const remoteArr = [];
                 snap.forEach(doc => {
-                    const docData = doc.data() || {};
-                    const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : doc.id;
+                    const rawId = doc.id;
                     const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
-                    const data = { ...docData, id: numericId };
+                    const data = { ...doc.data(), id: numericId };
                     delete data._syncedAt;
-
-                    if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
-                        data.grade = normalizeImportedStudentGrade(data);
-                    } else if (table === 'groups' && typeof normalizeGrade === 'function') {
-                        if (data.grade) data.grade = normalizeGrade(data.grade);
-                    }
-
                     remoteArr.push(data);
                 });
 
-                if (remoteArr.length > 0) {
+                if (isFreshSync) {
+                    await replaceLocalTableFromRemote(table, remoteArr);
+                } else if (remoteArr.length > 0) {
                     await mergeRemoteTable(table, remoteArr);
                 }
             }
@@ -850,35 +626,10 @@ const CloudSync = (() => {
             console.log('[CloudSync] ✅ الاتصال جاهز، مشروع Firebase:', FIREBASE_CONFIG.projectId);
             setStatus(navigator.onLine ? 'syncing' : 'offline');
 
-            await importPendingOfflineMigrations();
-
             attachAllListeners();
 
-            window.addEventListener('online', () => {
-                console.log('[CloudSync] رجع النت — إعادة مزامنة وتفريغ البيانات السحابية');
-                setStatus('syncing');
-                pushAllTables();
-                pullAllFromCloudInitial();
-            });
+            window.addEventListener('online', () => { console.log('[CloudSync] رجع النت — إعادة مزامنة'); setStatus('syncing'); pushAllTables(); });
             window.addEventListener('offline', () => setStatus('offline'));
-
-            // ── دعم عودة الهواتف من النوم والتنقل بين التطبيقات ──
-            const onAppBecomeVisible = () => {
-                if (document.visibilityState === 'visible' && navigator.onLine) {
-                    console.log('[CloudSync] 📱 عودة التطبيق للواجهة — التحقق اللحظي من البيانات السحابية...');
-                    pushAllTables();
-                    pullAllFromCloudInitial();
-                }
-            };
-            document.addEventListener('visibilitychange', onAppBecomeVisible);
-            window.addEventListener('focus', onAppBecomeVisible);
-
-            // ── نبض المزامنة الدوري اللحظي (Heartbeat كل 15 ثانية) ──
-            setInterval(() => {
-                if (navigator.onLine && ready && !applyingRemote) {
-                    pushAllTables();
-                }
-            }, 15000);
 
             // عند الاتصال بمشروع جديد أو أول تشغيل: جلب ودمج كامل لجميع سجلات مشروع Firebase أولاً
             if (isFreshSync) {
@@ -915,7 +666,6 @@ const CloudSync = (() => {
         forceSync: pushAllTables,
         syncTableNow,
         manualPushToCloud, manualPullFromCloud,
-        importPendingOfflineMigrations,
         getFirestoreDB: () => fsDB
     };
 })();
@@ -923,18 +673,3 @@ const CloudSync = (() => {
 window.CloudSync = CloudSync;
 window.manualPushToCloud = () => CloudSync.manualPushToCloud();
 window.manualPullFromCloud = () => CloudSync.manualPullFromCloud();
-window.importPendingOfflineMigrations = () => CloudSync.importPendingOfflineMigrations();
-
-// ── ضمان التشغيل الإجباري والتأكد من تهيئة المزامنة السحابية دائماً ──
-if (typeof window !== 'undefined') {
-    const triggerInit = () => {
-        if (!CloudSync.isReady()) {
-            CloudSync.init().catch(e => console.warn('[CloudSync] auto-init error:', e));
-        }
-    };
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(triggerInit, 100);
-    } else {
-        document.addEventListener('DOMContentLoaded', () => setTimeout(triggerInit, 100));
-    }
-}

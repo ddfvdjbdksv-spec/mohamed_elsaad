@@ -1,7 +1,7 @@
 {
-  "name": "نظام محمد السيد",
-  "short_name": "محمد السيد",
-  "description": "نظام محمد السيد لإدارة الدروس",
+  "name": "مستر محمد سليمان",
+  "short_name": "مستر محمد سليمان",
+  "description": "نظام مستر محمد سليمان المتكامل",
   "start_url": "./",
   "display": "standalone",
   "orientation": "any",
