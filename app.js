@@ -11780,7 +11780,13 @@ async function waitForCloudTableSync(table) {
         return false;
     }
     try {
-        await CloudSync.syncTableNow(table);
+        // ⏱️ حد أقصى 5 ثواني — بعدها نكمل بدون انتظار Firebase
+        const timeout = new Promise(resolve => setTimeout(() => resolve('timeout'), 5000));
+        const result = await Promise.race([CloudSync.syncTableNow(table), timeout]);
+        if (result === 'timeout') {
+            console.warn('[CloudSync] syncTableNow timed out for table:', table);
+            return false;
+        }
         return true;
     } catch (err) {
         console.warn('[CloudSync] immediate table sync failed', table, err);
