@@ -924,3 +924,17 @@ window.CloudSync = CloudSync;
 window.manualPushToCloud = () => CloudSync.manualPushToCloud();
 window.manualPullFromCloud = () => CloudSync.manualPullFromCloud();
 window.importPendingOfflineMigrations = () => CloudSync.importPendingOfflineMigrations();
+
+// ── ضمان التشغيل الإجباري والتأكد من تهيئة المزامنة السحابية دائماً ──
+if (typeof window !== 'undefined') {
+    const triggerInit = () => {
+        if (!CloudSync.isReady()) {
+            CloudSync.init().catch(e => console.warn('[CloudSync] auto-init error:', e));
+        }
+    };
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(triggerInit, 100);
+    } else {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(triggerInit, 100));
+    }
+}
