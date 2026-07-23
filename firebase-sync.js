@@ -398,6 +398,173 @@ const CloudSync = (() => {
         return true;
     }
 
+    function normalizeRemoteRecord(table, docData, docId) {
+        const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : docId;
+        const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
+        const data = { ...docData, id: numericId };
+        delete data._syncedAt;
+        delete data._sourceTable;
+        delete data._rowIndex;
+        delete data._migrationId;
+
+        if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
+            data.grade = normalizeImportedStudentGrade(data);
+        } else if (table === 'groups' && typeof normalizeGrade === 'function') {
+            if (data.grade) data.grade = normalizeGrade(data.grade);
+        }
+        return data;
+    }
+
+    function mergeSettingsFromMigration(settings) {
+        if (!settings || typeof settings !== 'object') return false;
+        db._settings = { ...(db._settings || {}), ...settings };
+        try { localStorage.setItem('edu_master_settings', JSON.stringify(db._settings)); } catch (e) { }
+        hashes.__settings = hashOf(db._settings);
+        return true;
+    }
+
+    function applyGradesListFromMigration(grades) {
+        if (!Array.isArray(grades) || !grades.length) return false;
+        try {
+            if (typeof buildGradesList === 'function') {
+                window.gradesList = buildGradesList(grades);
+            } else {
+                window.gradesList = grades;
+            }
+            if (typeof gradesList !== 'undefined') gradesList = window.gradesList;
+            localStorage.setItem('edu_grades_list', JSON.stringify(window.gradesList));
+            return true;
+        } catch (e) {
+            console.warn('[CloudSync] failed to apply migrated gradesList', e);
+            return false;
+        }
+    }
+
+    async function readMigrationMeta(migrationId) {
+        try {
+            const chunksSnap = await fsDB
+                .collection('offline_migrations').doc(migrationId)
+                .collection('metaChunks')
+                .orderBy('index')
+                .get();
+            if (chunksSnap.empty) return null;
+            let json = '';
+            chunksSnap.forEach(doc => { json += String((doc.data() || {}).chunk || ''); });
+            return JSON.parse(json || '{}');
+        } catch (e) {
+            console.warn('[CloudSync] could not read migration meta chunks', migrationId, e);
+            return null;
+        }
+    }
+
+    async function importOfflineMigration(migrationDoc) {
+        const migrationId = migrationDoc.id;
+        const importRef = fsDB.collection('meta').doc('offlineMigrationImports').collection('items').doc(migrationId);
+        const alreadyImported = await importRef.get();
+        if (alreadyImported.exists) return { migrationId, skipped: true, importedRows: 0 };
+
+        const migrationData = migrationDoc.data() || {};
+        console.log('[CloudSync] importing offline migration:', migrationId, migrationData);
+        setStatus('syncing');
+        applyingRemote = true;
+
+        const report = {};
+        let importedRows = 0;
+
+        for (const table of SYNC_TABLES) {
+            const rowsSnap = await fsDB
+                .collection('offline_migrations').doc(migrationId)
+                .collection('tables').doc(table)
+                .collection('rows')
+                .get();
+            if (rowsSnap.empty) {
+                report[table] = 0;
+                continue;
+            }
+
+            const remoteArr = [];
+            rowsSnap.forEach(doc => {
+                remoteArr.push(normalizeRemoteRecord(table, doc.data() || {}, doc.id));
+            });
+
+            for (let i = 0; i < remoteArr.length; i += 400) {
+                const batch = fsDB.batch();
+                remoteArr.slice(i, i + 400).forEach(data => {
+                    batch.set(fsDB.collection(table).doc(String(data.id)), {
+                        ...sanitize(data),
+                        _syncedAt: Date.now(),
+                        _migrationId: migrationId,
+                    }, { merge: true });
+                });
+                await batch.commit();
+            }
+
+            await mergeRemoteTable(table, remoteArr);
+            report[table] = remoteArr.length;
+            importedRows += remoteArr.length;
+            queueTableUIRefresh(table);
+        }
+
+        const meta = await readMigrationMeta(migrationId);
+        const settingsImported = meta ? mergeSettingsFromMigration(meta.settings) : false;
+        const gradesImported = meta ? applyGradesListFromMigration(meta.gradesList) : false;
+        if (settingsImported) {
+            await fsDB.collection('meta').doc('settings')
+                .set({ ...sanitize(db._settings), _syncedAt: Date.now(), _migrationId: migrationId }, { merge: true });
+        }
+
+        await importRef.set({
+            migrationId,
+            importedAt: Date.now(),
+            importedRows,
+            sourceProjectId: migrationData.projectId || null,
+            report,
+            settingsImported,
+            gradesImported,
+        }, { merge: true });
+
+        applyingRemote = false;
+        saveHashes();
+        console.log('[CloudSync] offline migration imported:', { migrationId, importedRows, report });
+        return { migrationId, skipped: false, importedRows, report };
+    }
+
+    async function importPendingOfflineMigrations() {
+        try {
+            const snap = await fsDB.collection('offline_migrations').get();
+            if (snap.empty) return [];
+
+            const candidates = [];
+            snap.forEach(doc => {
+                const data = doc.data() || {};
+                if (!data.status || data.status === 'completed') {
+                    candidates.push({ doc, completedAt: data.completedAt || data.startedAt || '' });
+                }
+            });
+            candidates.sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)));
+
+            const results = [];
+            for (const item of candidates) {
+                results.push(await importOfflineMigration(item.doc));
+            }
+
+            const imported = results.filter(r => !r.skipped);
+            if (imported.length) {
+                const total = imported.reduce((sum, r) => sum + (r.importedRows || 0), 0);
+                console.log(`[CloudSync] imported ${imported.length} offline migration(s), ${total} rows`);
+                if (typeof showNotification === 'function') {
+                    showNotification(`تم استقبال بيانات الترحيل من Firebase (${total.toLocaleString()} سجل)`, 'success');
+                }
+            }
+            return results;
+        } catch (e) {
+            console.warn('[CloudSync] importPendingOfflineMigrations warning:', e);
+            return [];
+        } finally {
+            applyingRemote = false;
+        }
+    }
+
     // ── جلب يدوي بزر — دمج البيانات المحلية مع بيانات السحابة دون مسح التعديلات المحلية ──
     async function manualPullFromCloud() {
         if (!ready) {
@@ -651,6 +818,8 @@ const CloudSync = (() => {
             console.log('[CloudSync] ✅ الاتصال جاهز، مشروع Firebase:', FIREBASE_CONFIG.projectId);
             setStatus(navigator.onLine ? 'syncing' : 'offline');
 
+            await importPendingOfflineMigrations();
+
             attachAllListeners();
 
             window.addEventListener('online', () => { console.log('[CloudSync] رجع النت — إعادة مزامنة'); setStatus('syncing'); pushAllTables(); });
@@ -691,6 +860,7 @@ const CloudSync = (() => {
         forceSync: pushAllTables,
         syncTableNow,
         manualPushToCloud, manualPullFromCloud,
+        importPendingOfflineMigrations,
         getFirestoreDB: () => fsDB
     };
 })();
@@ -698,3 +868,4 @@ const CloudSync = (() => {
 window.CloudSync = CloudSync;
 window.manualPushToCloud = () => CloudSync.manualPushToCloud();
 window.manualPullFromCloud = () => CloudSync.manualPullFromCloud();
+window.importPendingOfflineMigrations = () => CloudSync.importPendingOfflineMigrations();
