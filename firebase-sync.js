@@ -169,7 +169,11 @@ const CloudSync = (() => {
         if (table) pendingTableRefreshes.add(table);
         clearTimeout(rerenderTimer);
         rerenderTimer = setTimeout(() => {
-            const globals = ['syncUIWithContext', 'renderMonthlySubscriptionTables', 'renderSubscriptionTracker', 'updateDashboardStats'];
+            const globals = [
+                'syncUIWithContext', 'renderMonthlySubscriptionTables', 'renderSubscriptionTracker',
+                'updateDashboardStats', 'renderStudents', 'renderGroups', 'renderPortalGroups',
+                'refreshGroupContexts', 'renderPortalAttendance'
+            ];
             globals.forEach(fn => { try { if (typeof window[fn] === 'function') window[fn](); } catch (e) { } });
 
             pendingTableRefreshes.forEach(t => {
@@ -414,10 +418,18 @@ const CloudSync = (() => {
                 const snap = await fsDB.collection(table).get({ source: 'server' });
                 const remoteArr = [];
                 snap.forEach(doc => {
-                    const rawId = doc.id;
+                    const docData = doc.data() || {};
+                    const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : doc.id;
                     const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
-                    const data = { ...doc.data(), id: numericId };
+                    const data = { ...docData, id: numericId };
                     delete data._syncedAt;
+
+                    if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
+                        data.grade = normalizeImportedStudentGrade(data);
+                    } else if (table === 'groups' && typeof normalizeGrade === 'function') {
+                        if (data.grade) data.grade = normalizeGrade(data.grade);
+                    }
+
                     remoteArr.push(data);
                 });
 
@@ -475,7 +487,8 @@ const CloudSync = (() => {
         const arr = db[table];
         if (!Array.isArray(arr)) return false;
 
-        const rawId = change.doc.id;
+        const docData = change.doc.data() || {};
+        const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : change.doc.id;
         const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
         const strId = String(numericId);
 
@@ -489,8 +502,14 @@ const CloudSync = (() => {
             return true;
         }
 
-        const data = { ...change.doc.data(), id: numericId };
+        const data = { ...docData, id: numericId };
         delete data._syncedAt;
+
+        if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
+            data.grade = normalizeImportedStudentGrade(data);
+        } else if (table === 'groups' && typeof normalizeGrade === 'function') {
+            if (data.grade) data.grade = normalizeGrade(data.grade);
+        }
 
         const idx = arr.findIndex(r => String(r.id) === strId);
         if (idx > -1) {
@@ -563,16 +582,22 @@ const CloudSync = (() => {
                 const snap = await fsDB.collection(table).get();
                 const remoteArr = [];
                 snap.forEach(doc => {
-                    const rawId = doc.id;
+                    const docData = doc.data() || {};
+                    const rawId = (docData.id !== undefined && docData.id !== null) ? docData.id : doc.id;
                     const numericId = isNaN(Number(rawId)) ? rawId : Number(rawId);
-                    const data = { ...doc.data(), id: numericId };
+                    const data = { ...docData, id: numericId };
                     delete data._syncedAt;
+
+                    if (table === 'students' && typeof normalizeImportedStudentGrade === 'function') {
+                        data.grade = normalizeImportedStudentGrade(data);
+                    } else if (table === 'groups' && typeof normalizeGrade === 'function') {
+                        if (data.grade) data.grade = normalizeGrade(data.grade);
+                    }
+
                     remoteArr.push(data);
                 });
 
-                if (isFreshSync) {
-                    await replaceLocalTableFromRemote(table, remoteArr);
-                } else if (remoteArr.length > 0) {
+                if (remoteArr.length > 0) {
                     await mergeRemoteTable(table, remoteArr);
                 }
             }
