@@ -48,5 +48,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, host, () => {
-    console.log(`Markaz Mohamed ElSayed (مستر محمد السيد) is running at http://${host}:${port}`);
+    console.log(`نظام إدارة الدروس is running at http://${host}:${port}`);
 });

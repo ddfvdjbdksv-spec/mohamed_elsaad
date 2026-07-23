@@ -195,7 +195,7 @@ window.RBAC = RBAC;
 // بالكامل — كانت وظائف مساعدة لقسم "مزامنة المنصة للموظف" اللي اعتمد على Firebase
 
 /**
- * مستر محمد السيد v2.0 - Core Intelligence Engine
+ * نظام إدارة الدروس v2.0 - Core Intelligence Engine
  * Specialized for Mr. Mohamed's Education Center
  */
 
@@ -398,6 +398,9 @@ const StorageEngine = {
                 }
             }
         }
+        if (typeof CloudSync !== 'undefined' && CloudSync.isReady && CloudSync.isReady()) {
+            try { CloudSync.onLocalSave(storeName); } catch (e) { console.warn('[CloudSync] onLocalSave failed', e); }
+        }
     },
 
     async delete(storeName, id) {
@@ -406,7 +409,23 @@ const StorageEngine = {
         const transaction = this.db.transaction([storeName], "readwrite");
         const store = transaction.objectStore(storeName);
         store.delete(id);
-        return new Promise((resolve) => transaction.oncomplete = () => resolve());
+        await new Promise((resolve) => transaction.oncomplete = () => resolve());
+        if (typeof CloudSync !== 'undefined' && CloudSync.isReady && CloudSync.isReady()) {
+            try { CloudSync.onLocalSave(storeName); } catch (e) { console.warn('[CloudSync] onLocalSave failed', e); }
+        }
+    },
+
+    async clear(storeName) {
+        if (!this.db) await this.init();
+        if (!this.db || !this.db.objectStoreNames.contains(storeName)) return;
+        const transaction = this.db.transaction([storeName], "readwrite");
+        const store = transaction.objectStore(storeName);
+        store.clear();
+        await new Promise((resolve) => {
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => resolve();
+            transaction.onabort = () => resolve();
+        });
     },
 
     async get(storeName, id) {
@@ -586,6 +605,7 @@ const db = {
         this.students = await StorageEngine.getAll('students');
         this.attendance = await StorageEngine.getAll('attendance');
         this.payments = await StorageEngine.getAll('payments');
+        this.expenses = await StorageEngine.getAll('expenses');
         this.exams = await StorageEngine.getAll('exams');
         this.scores = await StorageEngine.getAll('scores');
         this.dailyTreasuryArchives = await StorageEngine.getAll('dailyTreasuryArchives');
@@ -615,27 +635,33 @@ const db = {
             window.gradesList = gradesList;
         }
 
-        // ── ضمان المجاميع الثابتة في كل load ──────────────────────
-        // الـ 6 مجاميع (g2a-g2c, g3a-g3c) لازم موجودة دايماً
-        const bookingIds = ['g2a','g2b','g2c','g3a','g3b','g3c'];
-        const missingGroups = bookingIds.filter(bid => !this.groups.find(g => String(g.id) === bid));
-        if (missingGroups.length > 0) {
-            const DEFS = [
-                { id:'g2a', name:'مجموعة A — ثاني ثانوي', days:'السبت والثلاثاء',  time:'٤:٠٠ م — ٦:٠٠ م', grade:'2', price:350 },
-                { id:'g2b', name:'مجموعة B — ثاني ثانوي', days:'الأحد والأربعاء',  time:'٥:٠٠ م — ٧:٠٠ م', grade:'2', price:350 },
-                { id:'g2c', name:'مجموعة C — ثاني ثانوي', days:'الاثنين والخميس', time:'٦:٠٠ م — ٨:٠٠ م', grade:'2', price:350 },
-                { id:'g3a', name:'مجموعة A — ثالث ثانوي', days:'السبت والثلاثاء',  time:'٢:٠٠ م — ٤:٠٠ م', grade:'3', price:400 },
-                { id:'g3b', name:'مجموعة B — ثالث ثانوي', days:'الأحد والأربعاء',  time:'٣:٠٠ م — ٥:٠٠ م', grade:'3', price:400 },
-                { id:'g3c', name:'مجموعة C — ثالث ثانوي', days:'الاثنين والخميس', time:'٧:٠٠ م — ٩:٠٠ م', grade:'3', price:400 },
-            ];
-            const toAdd = [];
-            for (const def of DEFS) {
-                if (!this.groups.find(g => String(g.id) === def.id)) {
-                    this.groups.push({ ...def });
-                    toAdd.push({ ...def });
+        // ── إضافة المجاميع الافتراضية مرة واحدة فقط عند أول تشغيل ──
+        // ملحوظة: كانت هذه المجاميع (g2a-g2c, g3a-g3c) تُعاد إضافتها في
+        // كل تحميل حتى لو حذفها المستخدم عمداً، وهو ما كان يمنع حذفها
+        // فعلياً بشكل دائم. الآن تُزرع مرة واحدة فقط لأول تشغيل، وبعد
+        // ذلك يبقى قرار حذفها للمستخدم نهائياً دون إعادة إنشائها.
+        if (!localStorage.getItem('_defaultGroupsSeeded')) {
+            const bookingIds = ['g2a','g2b','g2c','g3a','g3b','g3c'];
+            const missingGroups = bookingIds.filter(bid => !this.groups.find(g => String(g.id) === bid));
+            if (missingGroups.length > 0) {
+                const DEFS = [
+                    { id:'g2a', name:'مجموعة A — ثاني ثانوي', days:'السبت والثلاثاء',  time:'٤:٠٠ م — ٦:٠٠ م', grade:'2', price:350 },
+                    { id:'g2b', name:'مجموعة B — ثاني ثانوي', days:'الأحد والأربعاء',  time:'٥:٠٠ م — ٧:٠٠ م', grade:'2', price:350 },
+                    { id:'g2c', name:'مجموعة C — ثاني ثانوي', days:'الاثنين والخميس', time:'٦:٠٠ م — ٨:٠٠ م', grade:'2', price:350 },
+                    { id:'g3a', name:'مجموعة A — ثالث ثانوي', days:'السبت والثلاثاء',  time:'٢:٠٠ م — ٤:٠٠ م', grade:'3', price:400 },
+                    { id:'g3b', name:'مجموعة B — ثالث ثانوي', days:'الأحد والأربعاء',  time:'٣:٠٠ م — ٥:٠٠ م', grade:'3', price:400 },
+                    { id:'g3c', name:'مجموعة C — ثالث ثانوي', days:'الاثنين والخميس', time:'٧:٠٠ م — ٩:٠٠ م', grade:'3', price:400 },
+                ];
+                const toAdd = [];
+                for (const def of DEFS) {
+                    if (!this.groups.find(g => String(g.id) === def.id)) {
+                        this.groups.push({ ...def });
+                        toAdd.push({ ...def });
+                    }
                 }
+                if (toAdd.length) await StorageEngine.save('groups', toAdd);
             }
-            if (toAdd.length) await StorageEngine.save('groups', toAdd);
+            localStorage.setItem('_defaultGroupsSeeded', '1');
         }
 
         if (typeof renderStudents === 'function') renderStudents();
@@ -661,6 +687,11 @@ const db = {
         if (this.dailyTreasuryLastArchiveDate) localStorage.setItem('dailyTreasuryLastArchiveDate', this.dailyTreasuryLastArchiveDate);
 
         if (typeof updateDataInFile === 'function') updateDataInFile();
+
+        // ── مزامنة سحابية (Firestore) — best effort، لا توقف أي شيء لو فشلت ──
+        if (typeof CloudSync !== 'undefined' && CloudSync.isReady && CloudSync.isReady()) {
+            try { CloudSync.onLocalSave(modifiedTable); } catch (e) { console.warn('[CloudSync] onLocalSave failed', e); }
+        }
     }
 };
 
@@ -827,14 +858,6 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
         if (row?.id !== undefined && row?.id !== null) byId.set(String(row.id), row);
     });
 
-    // 🔧 إصلاح جوهري: كنا نفتح IndexedDB transaction منفصلة لكل سجل عبر
-    // await داخل الحلقة — ده كان بيسبب "تعليق" الاستعادة على شاشة "جاري القراءة"
-    // لدقائق طويلة مع الجداول الكبيرة (آلاف سجلات الحضور/المدفوعات)، خصوصاً على
-    // أجهزة أضعف. الآن نجمّع كل السجلات في مصفوفة واحدة ونحفظها دفعة واحدة عبر
-    // StorageEngine.save (اللي بيقسّمها تلقائياً لدفعات 5000 سجل/transaction) —
-    // أسرع بعشرات أو مئات المرّات.
-    const toSave = [];
-
     for (const incoming of incomingRows) {
         if (!incoming || typeof incoming !== 'object') {
             skipped++;
@@ -852,12 +875,12 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
                 groupIdRemap[String(incoming.id)] = String(current.id);
                 // ندمج لكن نحتفظ بالـ id المحلي
                 const merged = Object.assign({}, incoming, current); // current يكسب الـ id
-                toSave.push(merged);
+                await StorageEngine.save(table, merged);
                 byId.set(String(current.id), merged);
                 byIdentity.set(identity, merged);
             } else {
                 const merged = Object.assign({}, current, incoming);
-                toSave.push(merged);
+                await StorageEngine.save(table, merged);
                 if (merged.id !== undefined && merged.id !== null) byId.set(String(merged.id), merged);
                 if (identity) byIdentity.set(identity, merged);
             }
@@ -872,21 +895,17 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
         const idKey = String(incoming.id);
         if (byId.has(idKey)) {
             const merged = Object.assign({}, byId.get(idKey), incoming);
-            toSave.push(merged);
+            await StorageEngine.save(table, merged);
             byId.set(idKey, merged);
             updated++;
         } else {
-            toSave.push(incoming);
+            await StorageEngine.save(table, incoming);
             byId.set(idKey, incoming);
             added++;
         }
 
         const newIdentity = buildRecordIdentity(table, incoming);
         if (newIdentity) byIdentity.set(newIdentity, incoming);
-    }
-
-    if (toSave.length > 0) {
-        await StorageEngine.save(table, toSave);
     }
 
     // ── بعد دمج المجموعات: أعد ربط الطلاب إن تغيّرت أي IDs ──────
@@ -1052,9 +1071,6 @@ async function hydrateDatabase(dataBlob) {
 
             if (dataArray && Array.isArray(dataArray) && dataArray.length > 0) {
                 console.log(`⏳ استيراد جدول "${table}"... (${dataArray.length} عنصر)`);
-                // 🔧 تحديث الرسالة الظاهرة للمستخدم لكل جدول، حتى لا تبقى شاشة
-                // "جاري القراءة" ثابتة بلا حركة أثناء استيراد الجداول الكبيرة
-                showNotification(`⏳ جاري استيراد "${table}"... (${dataArray.length.toLocaleString()} سجل)`, 'info');
                 const result = await mergeTableWithoutDuplicates(table, dataArray);
                 if (result.added > 0 || result.updated > 0) tablesImported++;
                 totalAdded += result.added;
@@ -1599,31 +1615,17 @@ const SessionManager = {
     start() {
         const k = this._key(currentGrade, currentGroupId);
         this._store[k] = {
-            id:         Date.now(), // ✅ معرّف فريد لهذه الجلسة تحديدًا (يُستخدم في بوابة الدفع بالحصة)
             isActive:   true,
             isPaused:   false,
             attendance: [],
             grade:      String(currentGrade),
             groupId:    String(currentGroupId),
-            startedAt:  new Date().toISOString(),
         };
         // مزامنة المتغيرات العامة للكود القديم
         isLessonCodingActive     = true;
         isLessonCodingPaused     = false;
         currentSessionAttendance = [];
         this._save();
-        // ✅ سجل تنفيذ جلسة تشفير جديدة (للإحصائيات فقط — لا يؤثر على أي منطق آخر)
-        if (typeof SessionSub !== 'undefined' && typeof SessionSub.logEncryptionSessionStart === 'function') {
-            try { SessionSub.logEncryptionSessionStart(this._store[k].id); } catch (e) { /* تجاهل */ }
-        }
-    },
-
-    // ── معرّف جلسة التشفير الحالية للمجموعة المفتوحة (أو null لو غير نشطة) ──
-    currentId() {
-        const s = this.current();
-        if (!s || !s.isActive) return null;
-        if (!s.id) { s.id = Date.now(); this._save(); } // توافق مع جلسة كانت نشطة قبل هذا التحديث
-        return s.id;
     },
 
     // ── إيقاف مؤقت ───────────────────────────────────────────
@@ -1769,7 +1771,7 @@ function showSection(sectionId, btnEl) {
         'receipts': 'وصولات الدفع', 'platform-activation': 'تفعيل كورسات المنصة',
         'employee-platform-sync': 'مزامنة المنصة التعليمية'
     };
-    document.getElementById('page-title').innerText = titles[sectionId] || 'مستر محمد السيد';
+    document.getElementById('page-title').innerText = titles[sectionId] || 'نظام إدارة الدروس';
 
     if (sectionId === 'shifts') renderShifts();
 
@@ -2135,14 +2137,14 @@ async function handleStudentSubmit(printAfter = false) {
 
         db.students.push(student);
         await StorageEngine.save('students', student);
+        const studentCloudOk = await waitForCloudTableSync('students');
 
         studentListPage = 0;
         renderStudents();
 
         const attendanceSection = document.getElementById('attendance-section');
         if (attendanceSection && attendanceSection.style.display === 'block') {
-            const _isNewStudentSessionMode = (typeof SessionSub !== 'undefined') && SessionSub.isSessionStudent(student);
-            if (!db.settings.isMonthlyActive && !_isNewStudentSessionMode) {
+            if (!db.settings.isMonthlyActive) {
                 showNotification('تنبيه: تم إضافة الطالب لكن لم يتم تسجيل حضوره لعدم تفعيل الاشتراك من الخزينة', 'warning');
             } else {
                 SessionManager.addStudent({ ...student, scanTime: new Date().toISOString() });
@@ -2157,6 +2159,7 @@ async function handleStudentSubmit(printAfter = false) {
                 };
                 db.attendance.push(att);
                 await StorageEngine.save('attendance', att);
+                await waitForCloudTableSync('attendance');
             }
         }
 
@@ -2167,7 +2170,11 @@ async function handleStudentSubmit(printAfter = false) {
         document.getElementById('std-group').value = '';
 
         toggleModal('student-modal', false);
-        showNotification('تم إضافة الطالب بنجاح');
+        if (studentCloudOk) {
+            showNotification('تم إضافة الطالب وحفظه في قاعدة البيانات بنجاح', 'success');
+        } else {
+            showNotification('تم حفظ الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات. تأكد من الاتصال واضغط مزامنة.', 'warning');
+        }
 
         // ✅ لو المستخدم ضغط "حفظ وطباعة الكود" — نفتح الطباعة فورًا لنفس الطالب
         if (printAfter && typeof generatePrintableIDCards === 'function') {
@@ -2246,14 +2253,11 @@ async function renderStudents() {
             <td>
                 <div style="display:flex; gap:5px;">
                     <button class="btn" title="طباعة الكارت" style="padding:5px 10px; background:var(--primary); color:white;" onclick="generatePrintCard(${s.id})"><i class="fas fa-barcode"></i></button>
+                    <button class="btn" title="QR Code الطالب" style="padding:5px 10px; background:#7c3aed; color:white;" onclick="showStudentQR(${s.id})"><i class="fas fa-qrcode"></i></button>
                     <button class="btn" title="تقرير شامل" style="padding:5px 10px; background:#3b82f6; color:white;" onclick="generateMonthlyReport(${s.id})"><i class="fas fa-file-invoice"></i></button>
-                    ${(typeof SessionSub !== 'undefined' && SessionSub.isSessionStudent(s)) ? `
-                    <button class="btn" title="تقرير أداء الحصة" style="padding:5px 10px; background:#f59e0b; color:white;" onclick="SessionSub.openSessionPerformanceReport(${s.id})"><i class="fas fa-coins"></i></button>
-                    ` : ''}
                     <button class="btn" title="الملف الشخصي" style="padding:5px 10px;" onclick="viewDetailedProfile(${s.id})"><i class="fas fa-user-graduate"></i></button>
                     <button class="btn" title="تعديل" style="padding:5px 10px; background:var(--accent); color:white;" onclick="editStudent(${s.id})"><i class="fas fa-edit"></i></button>
-                    <button class="btn" title="نقل لمجموعة أخرى" style="padding:5px 10px; background:#8b5cf6; color:white;" onclick="showTransferStudentModal(${s.id})"><i class="fas fa-exchange-alt"></i></button>
-                    <button class="btn" title="حذف" style="padding:5px 10px; color:var(--danger);" onclick="deleteStudent(${s.id})"><i class="fas fa-trash"></i></button>
+                    <button class="btn" title="حذف" style="padding:5px 10px; color:var(--danger);" onclick="deleteStudent('${s.id}')"><i class="fas fa-trash"></i></button>
                 </div>
             </td>
         </tr>`).join('');
@@ -2292,7 +2296,7 @@ function handleAddGroup() {
     // Create group
     const newGroup = { id: Date.now(), name, time, grade: currentGrade };
     db.groups.push(newGroup);
-    db.save();
+    db.save('groups');
 
     // UI Updates
     renderGroups();
@@ -2362,10 +2366,10 @@ function renderGroups() {
             <td><span class="badge" style="background:var(--primary); color:white">${db.students.filter(s => s.groupId == g.id).length} طالب</span></td>
             <td>
                 <div style="display:flex; gap:10px;">
-                    <button class="btn btn-primary" style="padding: 5px 15px; background: var(--accent);" onclick="viewGroupDetails(${g.id})">
+                    <button class="btn btn-primary" style="padding: 5px 15px; background: var(--accent);" onclick="viewGroupDetails('${g.id}')">
                         <i class="fas fa-eye"></i> عرض المجموعة
                     </button>
-                    <button class="btn" style="color:var(--danger)" onclick="deleteGroup(${g.id})">
+                    <button class="btn" style="color:var(--danger)" onclick="deleteGroup('${g.id}')">
                         <i class="fas fa-trash"></i>
                     </button>
 
@@ -2416,7 +2420,6 @@ function renderGroupStudents() {
             <td>
                 <div style="display:flex; gap:8px;">
                     <button class="btn" style="padding:4px 8px; font-size:0.8rem;" onclick="viewDetailedProfile(${s.id})"><i class="fas fa-user"></i></button>
-                    <button class="btn" title="نقل لمجموعة أخرى" style="padding:4px 8px; font-size:0.8rem; background:#8b5cf6; color:white;" onclick="showTransferStudentModal(${s.id})"><i class="fas fa-exchange-alt"></i></button>
                     <button class="btn" style="padding:4px 8px; font-size:0.8rem; color:var(--danger);" onclick="removeStudentFromGroup(${s.id})"><i class="fas fa-user-minus"></i></button>
                 </div>
             </td>
@@ -2552,12 +2555,80 @@ async function removeStudentFromGroup(studentId) {
 
 async function deleteGroup(id) {
     if (!rbacGuardDelete('حذف المجموعة')) return;
-    if (!confirm('سيتم حذف المجموعة نهائياً. هل أنت متأكد من الاستمرار؟')) return;
-    db.groups = db.groups.filter(g => g.id != id);
+
+    const group = db.groups.find(g => String(g.id) === String(id));
+    if (!group) return;
+
+    const studentsInGroup = db.students.filter(s => String(s.groupId) === String(id));
+    const studentsCount   = studentsInGroup.length;
+    const attendanceCount = db.attendance.filter(a => String(a.groupId) === String(id)).length;
+    const paymentsCount   = db.payments.filter(p => studentsInGroup.some(s => String(s.id) === String(p.studentId))).length;
+
+    // رسالة تأكيد تفصيلية
+    let confirmMsg = `⚠️ حذف المجموعة: "${group.name}"\n\n`;
+    confirmMsg += `سيتم حذف:\n`;
+    confirmMsg += `• المجموعة نفسها\n`;
+    if (studentsCount  > 0) confirmMsg += `• ${studentsCount} طالب مرتبط بالمجموعة\n`;
+    if (attendanceCount > 0) confirmMsg += `• ${attendanceCount} سجل حضور\n`;
+    if (paymentsCount  > 0) confirmMsg += `• ${paymentsCount} عملية دفع مرتبطة بطلاب المجموعة\n`;
+    confirmMsg += `\nهذا الإجراء لا يمكن التراجع عنه!\nهل أنت متأكد؟`;
+
+    if (!confirm(confirmMsg)) return;
+
+    // حذف الحضور المرتبط بالمجموعة
+    const attendanceToDelete = db.attendance.filter(a => String(a.groupId) === String(id));
+    for (const a of attendanceToDelete) {
+        await StorageEngine.delete('attendance', a.id).catch(() => {});
+        if (typeof CloudSync !== 'undefined' && CloudSync.deleteRecord) {
+            CloudSync.deleteRecord('attendance', a.id);
+        }
+    }
+    db.attendance = db.attendance.filter(a => String(a.groupId) !== String(id));
+
+    // حذف المدفوعات المرتبطة بطلاب هذه المجموعة
+    const studentIds = new Set(studentsInGroup.map(s => String(s.id)));
+    const paymentsToDelete = db.payments.filter(p => studentIds.has(String(p.studentId)));
+    for (const p of paymentsToDelete) {
+        await StorageEngine.delete('payments', p.id).catch(() => {});
+        if (typeof CloudSync !== 'undefined' && CloudSync.deleteRecord) {
+            CloudSync.deleteRecord('payments', p.id);
+        }
+    }
+    db.payments = db.payments.filter(p => !studentIds.has(String(p.studentId)));
+
+    // حذف الطلاب المرتبطين بالمجموعة
+    for (const s of studentsInGroup) {
+        await StorageEngine.delete('students', s.id).catch(() => {});
+        if (typeof CloudSync !== 'undefined' && CloudSync.deleteRecord) {
+            CloudSync.deleteRecord('students', s.id);
+        }
+    }
+    db.students = db.students.filter(s => String(s.groupId) !== String(id));
+
+    // حذف المجموعة نفسها
+    db.groups = db.groups.filter(g => String(g.id) !== String(id));
     await StorageEngine.delete('groups', id);
+    if (typeof CloudSync !== 'undefined' && CloudSync.deleteRecord) {
+        CloudSync.deleteRecord('groups', id);
+    }
+
+    // حفظ كل الجداول المتأثرة
     await db.save('groups');
+    await db.save('students');
+    await db.save('attendance');
+    await db.save('payments');
+
+    if (typeof currentGroupId !== 'undefined' && String(currentGroupId) === String(id)) {
+        currentGroupId = null;
+    }
+    if (typeof activeGroupDetailId !== 'undefined' && String(activeGroupDetailId) === String(id)) {
+        activeGroupDetailId = null;
+        showSection('groups-section');
+    }
+
+    showNotification(`✅ تم حذف المجموعة "${group.name}" وكل بياناتها بنجاح`, 'success');
     renderGroups();
-    refreshGroupContexts(); // Update all dropdowns
+    if (typeof refreshGroupContexts === 'function') refreshGroupContexts();
 }
 
 
@@ -2894,7 +2965,7 @@ function showAbsenceArchive() {
                     <button class="btn btn-primary" style="padding:5px 10px;" onclick="viewAbsenceSessionDetails(${s.id})">
                         <i class="fas fa-eye"></i> التفاصيل
                     </button>
-                    <button class="btn" style="color:var(--danger);" onclick="deleteAbsenceSession(${s.id})">
+                    <button class="btn" style="color:var(--danger);" onclick="deleteAbsenceSession('${s.id}')">
                         <i class="fas fa-trash"></i>
                     </button>
                 </td>
@@ -2931,13 +3002,8 @@ function sendAbsenceWhatsApp(id) {
     const s = db.students.find(x => x.id === id);
     if (!s) return;
 
-    const message = buildFormalParentMessage({
-        noticeType: 'إشعار غياب',
-        bodyLines: [
-            `نحيط سيادتكم علماً بأن الطالب/ـة *${s.name}* لم يحضر/تحضر الحصة الدراسية اليوم الموافق ${new Date().toLocaleDateString('ar-EG')}.`,
-            `نرجو التكرم بمتابعة سبب الغياب، وموافاتنا بأي عذر إن وجد، حرصاً منا على انتظام مستواه/ـا الدراسي.`
-        ]
-    });
+    // ✅ استخدام نص الرسالة من إعدادات البرنامج مع استبدال {StudentName} باسم الطالب
+    const message = buildAbsenceMessageForStudent(s.name);
     const url = `https://wa.me/2${s.parentPhone}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
     showNotification('تم فتح واتساب للإرسال المباشر');
@@ -3006,9 +3072,6 @@ function toggleAttendanceView(view) {
         historyBtn.style.background = 'var(--bg-white)';
         historyBtn.style.color = 'var(--text-main)';
         startQRScanner();
-        if (typeof SessionSub !== 'undefined' && typeof SessionSub.renderModeIndicator === 'function') {
-            SessionSub.renderModeIndicator();
-        }
     } else {
         scannerView.style.display = 'none';
         historyView.style.display = 'block';
@@ -3446,7 +3509,8 @@ function toggleMonthlyPayment(studentId) {
             amount: db.settings.monthlyFee || 0,
             date: new Date().toISOString(),
             category: 'اشتراك شهري',
-            cycleId: db.settings.activeCycle
+            cycleId: db.settings.activeCycle,
+            collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
         });
         addToQueue(studentId, 'payment');
         showNotification('تم تسجيل الدفع بنجاح ✅');
@@ -3496,25 +3560,14 @@ function renderDailyTreasury() {
 
 
     let totalSub = 0;
-    let totalSession = 0;
     let totalMisc = 0;
     let totalExpensesTotal = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
-    const sessionPayingStudentsToday = new Set(
-        todayPayments.filter(p => p.category === 'اشتراك بالحصة').map(p => p.studentId)
-    ).size;
-    const sessionsExecutedToday = (db._settings && Array.isArray(db._settings.encryptionSessionLog))
-        ? db._settings.encryptionSessionLog.filter(l => {
-            const lDate = new Date(l.startedAt).toLocaleDateString('en-CA');
-            return lDate === todayStr && String(l.groupId) === String(currentGroupId);
-        }).length
-        : 0;
 
     list.innerHTML = `
         ${todayPayments.map(p => {
         const student = db.students.find(s => s.id === p.studentId);
         const group = student ? db.groups.find(g => g.id == student.groupId) : null;
         if (p.category === 'اشتراك شهري') totalSub += p.amount;
-        else if (p.category === 'اشتراك بالحصة') totalSession += p.amount;
         else totalMisc += p.amount;
 
         return `
@@ -3523,7 +3576,7 @@ function renderDailyTreasury() {
                     <div style="font-weight:700;">${student ? student.name : 'طالب مجهول'}</div>
                 </td>
                 <td>${group ? group.name : '---'}</td>
-                <td><span class="status-badge" style="background:var(--bg-light); color:var(--text-main)">${p.category}</span></td>
+                <td><span class="status-badge" style="background:var(--bg-light); color:var(--text-main)">${p.category}</span>${p.collectedBy ? `<br><span style="font-size:.72rem; color:var(--text-muted);"><i class="fas fa-user"></i> ${p.collectedBy}</span>` : ''}</td>
                 <td style="text-align:center; font-weight:800; color:var(--accent); font-size:1.1rem;">${p.amount} ج.م</td>
                 <td style="text-align:center; color:var(--text-muted)">${new Date(p.date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</td>
             </tr>
@@ -3544,16 +3597,9 @@ function renderDailyTreasury() {
 
     statsGrid.innerHTML = `
         <div class="card" style="padding:1.5rem; text-align:center; border-bottom:4px solid var(--accent); background: #f0fdf4;">
-            <div style="font-size:0.9rem; color:var(--text-muted); margin-bottom: 10px;">إجمالي الاشتراكات الشهرية</div>
+            <div style="font-size:0.9rem; color:var(--text-muted); margin-bottom: 10px;">إجمالي الاشتراكات</div>
             <div style="font-size:2rem; font-weight:800; color:var(--accent);">${totalSub} <small>ج.م</small></div>
             <p style="font-size:0.8rem; margin-top:5px; opacity:0.7;">محصلة من اشتراكات الشهر</p>
-        </div>
-        <div class="card" style="padding:1.5rem; text-align:center; border-bottom:4px solid #f59e0b; background: #fffbeb;">
-            <div style="font-size:0.9rem; color:var(--text-muted); margin-bottom: 10px;">إجمالي مقبوضات الحصة</div>
-            <div style="font-size:2rem; font-weight:800; color:#f59e0b;">${totalSession} <small>ج.م</small></div>
-            <p style="font-size:0.8rem; margin-top:5px; opacity:0.7;">
-                ${sessionPayingStudentsToday} طالب دفعوا اليوم — ${sessionsExecutedToday} جلسة تشفير نُفّذت اليوم
-            </p>
         </div>
         <div class="card" style="padding:1.5rem; text-align:center; border-bottom:4px solid var(--vibrant-orange); background: #fffcf0;">
             <div style="font-size:0.9rem; color:var(--text-muted); margin-bottom: 10px;">ملازم / أخرى</div>
@@ -3565,9 +3611,9 @@ function renderDailyTreasury() {
             <div style="font-size:2rem; font-weight:800; color:var(--danger);">${totalExpensesTotal} <small>ج.م</small></div>
             <p style="font-size:0.8rem; margin-top:5px; opacity:0.7;">إجمالي ما تم إنفاقه اليوم</p>
         </div>
-        <div class="card" style="padding:1.5rem; text-align:center; background:var(--primary); color:#fff; box-shadow: 0 10px 25px -5px rgba(79, 70, 229, 0.4); grid-column: span 4;">
+        <div class="card" style="padding:1.5rem; text-align:center; background:var(--primary); color:#fff; box-shadow: 0 10px 25px -5px rgba(79, 70, 229, 0.4); grid-column: span 3;">
             <div style="font-size:0.9rem; opacity: 0.9; margin-bottom: 10px;">صافي العهدة النقدية اليوم</div>
-            <div style="font-size:2.5rem; font-weight:900;">${totalSub + totalSession + totalMisc - totalExpensesTotal} <small>ج.م</small></div>
+            <div style="font-size:2.5rem; font-weight:900;">${totalSub + totalMisc - totalExpensesTotal} <small>ج.م</small></div>
             <p style="font-size:0.8rem; margin-top:5px; opacity:0.7;">إجمالي المتبقي في الخزنة اليوم فعلياً</p>
         </div>
     `;
@@ -3589,21 +3635,17 @@ function renderQuickDailyTreasuryModal() {
     const listEl = document.getElementById('daily-treasury-list');
     if (!statsEl || !listEl) return;
 
-    const { todayPayments, todayExpenses, totalSub, totalSession, totalMisc, totalExpenses } = _getTodaysTreasurySessionData();
-    const netTotal = totalSub + totalSession + totalMisc - totalExpenses;
+    const { todayPayments, todayExpenses, totalSub, totalMisc, totalExpenses } = _getTodaysTreasurySessionData();
+    const netTotal = totalSub + totalMisc - totalExpenses;
 
     statsEl.innerHTML = `
         <div class="card" style="padding:1rem; text-align:center; border-bottom:4px solid var(--accent); background:#f0fdf4;">
-            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:6px;">اشتراكات شهرية</div>
+            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:6px;">اشتراكات</div>
             <div style="font-size:1.4rem; font-weight:800; color:var(--accent);">${totalSub} <small>ج.م</small></div>
         </div>
         <div class="card" style="padding:1rem; text-align:center; border-bottom:4px solid #f59e0b; background:#fffbeb;">
-            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:6px;">مقبوضات الحصة</div>
-            <div style="font-size:1.4rem; font-weight:800; color:#f59e0b;">${totalSession} <small>ج.م</small></div>
-        </div>
-        <div class="card" style="padding:1rem; text-align:center; border-bottom:4px solid var(--vibrant-orange); background:#fffcf0;">
             <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:6px;">ملازم / أخرى</div>
-            <div style="font-size:1.4rem; font-weight:800; color:var(--vibrant-orange);">${totalMisc} <small>ج.م</small></div>
+            <div style="font-size:1.4rem; font-weight:800; color:#f59e0b;">${totalMisc} <small>ج.م</small></div>
         </div>
         <div class="card" style="padding:1rem; text-align:center; background:var(--primary); color:#fff;">
             <div style="font-size:0.8rem; opacity:0.9; margin-bottom:6px;">صافي العهدة</div>
@@ -3854,6 +3896,7 @@ function _archiveDateTreasury(dateStr) {
                     studentName: s ? s.name : 'طالب مجهول',
                     category: p.category,
                     amount: p.amount,
+                    collectedBy: p.collectedBy || null,
                     time: new Date(p.date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
                 };
             }),
@@ -4029,7 +4072,7 @@ function viewDailyArchive(archiveId) {
     const paymentsRows = payments.map((p, i) => `
         <tr style="${i % 2 === 0 ? 'background:#fafafa;' : ''}">
             <td style="padding:10px 14px; font-weight:700; color:#1e293b;">${p.studentName}</td>
-            <td style="padding:10px 14px; color:#64748b;">${p.category}</td>
+            <td style="padding:10px 14px; color:#64748b;">${p.category}${p.collectedBy ? `<br><span style="font-size:.72rem; color:#94a3b8;">بواسطة: ${p.collectedBy}</span>` : ''}</td>
             <td style="padding:10px 14px; text-align:center; font-weight:800; color:#10b981;">${p.amount} ج.م</td>
             <td style="padding:10px 14px; text-align:center; color:#94a3b8; font-size:0.82rem;">${p.time || '—'}</td>
         </tr>`).join('');
@@ -4513,7 +4556,7 @@ function addToQueue(studentId, type, customText = null) {
     const s = db.students.find(x => x.id === studentId);
     if (!s) return;
 
-    let text = customText || waTemplates[type] || "تنبيه من مستر محمد السيد - [[name]]";
+    let text = customText || waTemplates[type] || "تنبيه من نظام إدارة الدروس - [[name]]";
     text = text.replace(/\[\[name\]\]/g, s.name).replace(/\[\[points\]\]/g, s.points || 0);
     text += getTeacherSignatureLine();
 
@@ -5358,7 +5401,7 @@ function renderFastHistory() {
                 </td>
                 <td>${new Date(s.id).toLocaleTimeString('ar-EG')}</td>
                 <td>
-                    <button class="btn" style="color:var(--danger); padding:4px;" onclick="deleteScore(${s.id})">
+                    <button class="btn" style="color:var(--danger); padding:4px;" onclick="deleteScore('${s.id}')">
                         <i class="fas fa-trash"></i>
                     </button>
                 </td>
@@ -5943,11 +5986,8 @@ function processScan(token) {
 
     const todayStr = new Date().toLocaleDateString('en-CA');
 
-    // --- Block Scanning if subscription is not active ---
-    // ✅ الاستثناء خاص بهذا الطالب تحديداً (لو هو نفسه مفعّل "بالحصة")
-    //    ولا يُفعّل الاشتراك الشهري لأي طالب آخر بأي شكل
-    const _isStudentSessionMode = (typeof SessionSub !== 'undefined') && SessionSub.isSessionStudent(student);
-    if (!db.settings.isMonthlyActive && !_isStudentSessionMode) {
+    // --- NEW: Block Scanning if subscription is not active ---
+    if (!db.settings.isMonthlyActive) {
         playSound('error');
         showNotification('🛑 تنبيه: يرجى تفعيل "بدء الاشتراك" من قسم الخزينة أولاً لتتمكن من رصد الحضور', 'error');
         return;
@@ -6080,9 +6120,12 @@ function searchStudentSmart(query) {
 
     const q = normalize(query);
 
-    // ملاحظة: لا يوجد حظر هنا على مستوى البحث — لأن الحظر الفعلي (حسب نوع
-    // اشتراك كل طالب على حدة: شهري / بالحصة) يتم عند الضغط الفعلي على الطالب
-    // داخل recordQuickAction، فلا داعي لمنع ظهور نتائج البحث نفسها.
+    // --- NEW: Block Search selection if subscription is not active ---
+    if (!db.settings.isMonthlyActive) {
+        results.style.display = 'block';
+        results.innerHTML = '<div class="result-item" style="color:var(--danger); justify-content:center;">⚠️ يرجى تفعيل الاشتراك من الخزينة أولاً</div>';
+        return;
+    }
 
     const matchedStudents = db.students.filter(s => {
         // ✅ إصلاح: توحيد صيغة الصف قبل المقارنة (قديم/systemCode/platformCode)
@@ -6163,9 +6206,6 @@ function openSmartCard(studentId) {
     const isPaid = !!payment;
     const isExemption = payment?.isExemption;
 
-    // ✅ نظام الاشتراك بالحصة (إضافة منفصلة تماماً عن منطق الاشتراك الشهري)
-    const isSessionMode = (typeof SessionSub !== 'undefined') && SessionSub.isSessionStudent(s);
-
     // 2. Render Card
     const container = document.getElementById('smart-card-content');
     if (!container) return;
@@ -6186,9 +6226,9 @@ function openSmartCard(studentId) {
                     <small style="color:var(--text-muted)">الحصة السابقة</small>
                     <div style="font-weight:700; color:${finalStatus === 'absent' ? 'var(--danger)' : 'var(--accent)'}">${finalStatus ? (finalStatus === 'present' ? 'حضور ✅' : 'غياب ❌') : 'أول حضور'}</div>
                 </div>
-                <div class="card" style="padding:1rem; border:2px solid ${isSessionMode ? SessionSub.cardBorderColor(s) : (isPaid ? (isExemption ? 'var(--border)' : 'var(--accent)') : 'var(--danger)')};">
-                    <small style="color:var(--text-muted)">${isSessionMode ? 'الاشتراك بالحصة' : 'اشتراك الشهر'}</small>
-                    <div style="font-weight:700; color:${isSessionMode ? SessionSub.cardTextColor(s) : (isPaid ? (isExemption ? 'var(--text-muted)' : 'var(--accent)') : 'var(--danger)')}">${isSessionMode ? SessionSub.cardStatusLabel(s) : (isPaid ? (isExemption ? 'معفي ✅' : 'خالص ✅') : 'غير خالص ⏳')}</div>
+                <div class="card" style="padding:1rem; border:2px solid ${isPaid ? (isExemption ? 'var(--border)' : 'var(--accent)') : 'var(--danger)'};">
+                    <small style="color:var(--text-muted)">اشتراك الشهر</small>
+                    <div style="font-weight:700; color:${isPaid ? (isExemption ? 'var(--text-muted)' : 'var(--accent)') : 'var(--danger)'}">${isPaid ? (isExemption ? 'معفي ✅' : 'خالص ✅') : 'غير خالص ⏳'}</div>
                 </div>
             </div>
 
@@ -6198,25 +6238,12 @@ function openSmartCard(studentId) {
                     onclick="recordQuickAction(${s.id}, 'attendance'); openSmartCard(${s.id});">
                     <i class="fas fa-user-check"></i> تسجيل حضور
                 </button>
-                ${isSessionMode ? SessionSub.buildSmartCardButtons(s) : `
-                <!-- أزرار دفع الاشتراك الثلاثة المستقلة -->
+                <!-- أزرار دفع الاشتراك -->
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <button class="btn btn-payment" style="height: 65px; border-radius: 12px; font-size: 0.88rem; line-height:1.3; background: #16a34a; box-shadow: 0 4px 14px -2px rgba(22,163,74,0.35);"
+                    <button class="btn btn-payment" style="height: 65px; border-radius: 12px; font-size: 0.88rem; line-height:1.3; background: #f97316; box-shadow: 0 4px 14px -2px rgba(249,115,22,0.4);"
                         onclick="payLessonDirect(${s.id})">
                         <i class="fas fa-chalkboard-teacher" style="display:block;font-size:1.2rem;margin-bottom:3px;"></i>
                         دفع اشتراك الدرس
-                    </button>
-                    <button class="btn btn-payment" style="height: 65px; border-radius: 12px; font-size: 0.88rem; line-height:1.3; background: #2563eb; box-shadow: 0 4px 14px -2px rgba(37,99,235,0.35);"
-                        onclick="payPlatformDirect(${s.id})">
-                        <i class="fas fa-laptop-code" style="display:block;font-size:1.2rem;margin-bottom:3px;"></i>
-                        دفع اشتراك المنصة
-                    </button>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px;">
-                    <button class="btn btn-payment" style="height: 65px; border-radius: 12px; font-size: 0.88rem; line-height:1.3; background: linear-gradient(135deg,#7c3aed,#db2777); box-shadow: 0 4px 14px -2px rgba(124,58,237,0.35);"
-                        onclick="payBothDirect(${s.id})">
-                        <i class="fas fa-layer-group" style="display:block;font-size:1.2rem;margin-bottom:3px;"></i>
-                        دفع الاشتراكين معاً
                     </button>
                     <button class="btn btn-payment" style="height: 65px; border-radius: 12px; font-size: 0.88rem; line-height:1.3; background: var(--vibrant-orange);"
                         onclick="recordQuickAction(${s.id}, 'handout'); openSmartCard(${s.id});">
@@ -6235,7 +6262,6 @@ function openSmartCard(studentId) {
                     <i class="fas fa-tags"></i> عمل خصم على الاشتراك (جزئي)
                 </button>
                 ` : ''}
-                `}
             </div>
 
             <button class="btn" style="width:100%; height:50px; background:var(--bg-light); border-radius:15px; border: 1px solid var(--border);" 
@@ -6273,11 +6299,8 @@ function recordQuickAction(studentId, action) {
     let attendanceChanged = false;
     let paymentsChanged = false;
 
-    // --- Block Quick Action if subscription is not active ---
-    // ✅ الاستثناء خاص بهذا الطالب تحديداً (لو هو نفسه مفعّل "بالحصة")
-    //    ولا يُفعّل الاشتراك الشهري لأي طالب آخر بأي شكل
-    const _isStudentSessionModeQuick = (typeof SessionSub !== 'undefined') && SessionSub.isSessionStudent(s);
-    if (!db.settings.isMonthlyActive && !_isStudentSessionModeQuick) {
+    // --- NEW: Block Quick Action if subscription is not active ---
+    if (!db.settings.isMonthlyActive) {
         playSound('error');
         showNotification('🛑 تنبيه: يرجى تفعيل "بدء الاشتراك" من قسم الخزينة أولاً لتتمكن من رصد الحضور', 'error');
         return;
@@ -6356,7 +6379,8 @@ function recordQuickAction(studentId, action) {
                 year: new Date().getFullYear(),
                 date: new Date().toISOString(),
                 category: 'اشتراك شهري',
-                cycleId: db.settings.activeCycle
+                cycleId: db.settings.activeCycle,
+                collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
             };
             db.payments.push(newPayment);
             paymentsChanged = true;
@@ -6385,7 +6409,8 @@ function recordQuickAction(studentId, action) {
             amount: parseInt(amount) || 0,
             date: new Date().toISOString(),
             category: 'ملزمة/مذكرة',
-            cycleId: db.settings.activeCycle || 'misc'
+            cycleId: db.settings.activeCycle || 'misc',
+            collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
         });
         paymentsChanged = true;
         showNotification(`تم تسجيل دفع الملزمة لـ ${s.name} ✅`, 'success');
@@ -6524,7 +6549,160 @@ function viewDetailedProfile(id) {
     toggleModal('profile-modal', true);
 }
 
-// --- System Helpers ---
+// ──────────────────────────────────────────────────────────────
+//  QR Code بطاقة الطالب — يفتح ملف الطالب مباشرة عند المسح
+// ──────────────────────────────────────────────────────────────
+let _currentQRStudentId = null;
+
+function showStudentQR(id) {
+    const s = db.students.find(x => x.id === id);
+    if (!s) return;
+    _currentQRStudentId = id;
+
+    const group = db.groups.find(g => g.id == s.groupId);
+
+    // بناء الـ URL الخاص بالطالب: student-report.html في نفس المجلد + ?student=ID
+    const baseDir = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/');
+    const studentUrl = `${baseDir}student-report.html?student=${id}`;
+
+    // تحديث بيانات الـ Modal
+    document.getElementById('qr-modal-student-name').textContent = s.name;
+    document.getElementById('qr-modal-student-info').textContent =
+        `${group ? group.name : '---'}  •  ${s.phone || '---'}`;
+    document.getElementById('qr-modal-code-text').textContent = studentUrl.length > 60
+        ? studentUrl.slice(0, 57) + '...' : studentUrl;
+
+    // تنظيف QR container وإعادة الرسم
+    const container = document.getElementById('student-qr-container');
+    container.innerHTML = '<div style="color:var(--text-muted);"><i class="fas fa-spinner fa-spin fa-2x"></i></div>';
+
+    toggleModal('student-qr-modal', true);
+
+    // رسم الـ QR Code بعد فتح الـ Modal
+    setTimeout(() => {
+        container.innerHTML = '';
+        if (typeof QRCode !== 'undefined') {
+            new QRCode(container, {
+                text: studentUrl,
+                width: 200,
+                height: 200,
+                colorDark: '#1e293b',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H
+            });
+        } else {
+            // Fallback: QR عبر Google Charts API
+            const img = document.createElement('img');
+            img.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(studentUrl)}&color=1e293b&bgcolor=ffffff&qzone=1`;
+            img.alt = 'QR Code';
+            img.style = 'width:200px; height:200px; border-radius:8px;';
+            container.appendChild(img);
+        }
+    }, 150);
+}
+
+function printStudentQRCard() {
+    const s = db.students.find(x => x.id === _currentQRStudentId);
+    if (!s) return;
+
+    const group = db.groups.find(g => g.id == s.groupId);
+    const baseDir = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/');
+    const studentUrl = `${baseDir}student-report.html?student=${s.id}`;
+    const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(studentUrl)}&color=1e293b&bgcolor=ffffff&qzone=2`;
+
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html dir="rtl"><head>
+        <meta charset="UTF-8">
+        <title>بطاقة QR - ${s.name}</title>
+        <style>
+            * { margin:0; padding:0; box-sizing:border-box; }
+            body { font-family: 'Segoe UI', Tahoma, sans-serif; background:#f1f5f9; display:flex; justify-content:center; align-items:center; min-height:100vh; }
+            .card { background:white; border-radius:20px; overflow:hidden; box-shadow:0 8px 30px rgba(0,0,0,0.12); width:320px; }
+            .card-header { background:linear-gradient(135deg,#0f4c81,#0ea5e9); color:white; padding:1.5rem; text-align:center; }
+            .card-header h2 { font-size:1.2rem; margin-bottom:0.2rem; }
+            .card-header p { opacity:.85; font-size:0.8rem; }
+            .card-body { padding:1.5rem; text-align:center; }
+            .card-body img { border-radius:12px; border:3px solid #e2e8f0; }
+            .student-url { font-size:0.65rem; color:#64748b; margin-top:0.8rem; word-break:break-all; direction:ltr; }
+            .group-badge { display:inline-block; background:#f1f5f9; border-radius:20px; padding:0.3rem 0.8rem; font-size:0.8rem; color:#0f4c81; font-weight:700; margin-top:0.6rem; }
+            @media print { body { background:white; } .card { box-shadow:none; } }
+        </style>
+    </head><body>
+        <div class="card">
+            <div class="card-header">
+                <h2>${s.name}</h2>
+                <p>بطاقة الطالب الرقمية</p>
+            </div>
+            <div class="card-body">
+                <img src="${qrImgSrc}" width="200" height="200" alt="QR Code">
+                <div class="group-badge">📚 ${group ? group.name : '---'}</div>
+                <p class="student-url">${studentUrl}</p>
+                <p style="font-size:0.75rem; color:#94a3b8; margin-top:0.5rem;">امسح الكود لفتح ملف الطالب</p>
+            </div>
+        </div>
+        <script>window.onload = () => setTimeout(() => window.print(), 500);<\/script>
+    </body></html>`);
+    win.document.close();
+}
+
+function downloadStudentQR() {
+    const s = db.students.find(x => x.id === _currentQRStudentId);
+    if (!s) return;
+
+    const baseUrl = window.location.origin + window.location.pathname;
+    const studentUrl = `${baseUrl}?student=${s.id}`;
+    const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(studentUrl)}&color=1e293b&bgcolor=ffffff&qzone=2`;
+
+    const a = document.createElement('a');
+    a.href = qrApiUrl;
+    a.download = `QR_${s.name.replace(/\s+/g, '_')}.png`;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showNotification('📥 جاري تحميل QR Code...', 'info');
+}
+
+function sendStudentQRWhatsApp(type) {
+    const s = db.students.find(x => x.id === _currentQRStudentId);
+    if (!s) return showNotification('لم يتم العثور على بيانات الطالب', 'error');
+
+    const phone = type === 'parent' ? (s.parentPhone || s.phone) : s.phone;
+    const recipientLabel = type === 'parent' ? 'ولي الأمر' : 'الطالب';
+
+    if (!phone) {
+        return showNotification(`رقم ${recipientLabel} غير مسجل لهذا الطالب`, 'warning');
+    }
+
+    const baseDir = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/');
+    const studentUrl = `${baseDir}student-report.html?student=${s.id}`;
+
+    const profile = typeof getProgramProfile === 'function' ? getProgramProfile() : {};
+    const teacherName = typeof getTeacherDisplayName === 'function' ? getTeacherDisplayName() : 'الأستاذ محمد السيد';
+    const spec = profile.specialization || 'مدرس اللغة العربية';
+
+    let msg = '';
+    if (typeof buildFormalParentMessage === 'function') {
+        msg = buildFormalParentMessage({
+            noticeType: `رابط التقرير المباشر للطالب/ـة ${s.name}`,
+            bodyLines: [
+`رابط التقرير الشخصي المباشر لمتابعة الحضور والغياب ودرجات الامتحانات والاشتراكات:
+
+📌 ${studentUrl}`
+            ]
+        });
+    } else {
+        msg = `السلام عليكم ورحمة الله وبركاته،\n\nرابط التقرير الشخصي المباشر للطالب/ـة: *${s.name}*\n${studentUrl}`;
+    }
+
+    const cleanPhone = String(phone).replace(/\D/g, '').replace(/^0/, '');
+    const fullPhone  = cleanPhone.startsWith('20') ? cleanPhone : `20${cleanPhone}`;
+    const url = `https://wa.me/${fullPhone}?text=${encodeURIComponent(msg)}`;
+    window.open(url, '_blank');
+}
+
+
+
 function showNotification(msg, type = 'success', duration = 4000) {
     const n = document.createElement('div');
     n.className = 'fade-in';
@@ -6888,11 +7066,6 @@ function endLessonCoding() {
     // ── 4. حفظ البيانات ─────────────────────────────────────────
     db.save();
 
-    // ── 4.5. أرشفة هذه الحصة تلقائياً في "أرشيف الحصص" المستقل (لكل جلسة تشفير) ──
-    if (typeof SessionSub !== 'undefined' && typeof SessionSub.archiveEncryptionSession === 'function') {
-        try { SessionSub.archiveEncryptionSession(); } catch (e) { console.warn('[SessionSub] لم تُؤرشف الحصة:', e); }
-    }
-
     // ── 5. إنهاء الجلسة (دائماً) ────────────────────────────────
     SessionManager.end();
     activePortalGroupId  = null;
@@ -6992,28 +7165,14 @@ function _getTodaysTreasurySessionData() {
         return e.id > sessionResetTime;
     });
 
-    let totalSub = 0, totalMisc = 0, totalSession = 0;
+    let totalSub = 0, totalMisc = 0;
     todayPayments.forEach(p => {
         if (p.category === 'اشتراك شهري') totalSub += p.amount;
-        else if (p.category === 'اشتراك بالحصة') totalSession += p.amount;
         else totalMisc += p.amount;
     });
     const totalExpenses = todayExpenses.reduce((sum, e) => sum + e.amount, 0);
 
-    // ✅ إحصائيات إضافية خاصة بالاشتراك بالحصة لهذا اليوم (لا تؤثر على أي حسابات أخرى)
-    const sessionPaymentsToday = todayPayments.filter(p => p.category === 'اشتراك بالحصة');
-    const sessionPayingStudentsToday = new Set(sessionPaymentsToday.map(p => p.studentId)).size;
-    const sessionsExecutedToday = (db._settings && Array.isArray(db._settings.encryptionSessionLog))
-        ? db._settings.encryptionSessionLog.filter(l => {
-            const lDate = new Date(l.startedAt).toLocaleDateString('en-CA');
-            return lDate === todayStr && String(l.groupId) === String(currentGroupId);
-        }).length
-        : 0;
-
-    return {
-        todayStr, todayPayments, todayExpenses, totalSub, totalSession, totalMisc, totalExpenses,
-        sessionPayingStudentsToday, sessionsExecutedToday
-    };
+    return { todayStr, todayPayments, todayExpenses, totalSub, totalMisc, totalExpenses };
 }
 
 /**
@@ -7080,20 +7239,20 @@ function showPrintDailyOptions() {
 
 // ── طباعة كشف المجموعة الحالية فقط (الكود الأصلي) ──────────────────
 function _printDailyTreasuryCurrentGroup() {
-    const { todayStr, todayPayments, todayExpenses, totalSub, totalSession, totalMisc, totalExpenses } = _getTodaysTreasurySessionData();
-    const netTotal = totalSub + totalSession + totalMisc - totalExpenses;
+    const { todayStr, todayPayments, todayExpenses, totalSub, totalMisc, totalExpenses } = _getTodaysTreasurySessionData();
+    const netTotal = totalSub + totalMisc - totalExpenses;
 
     const todayStrAr = new Date(todayStr).toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const groupObj = db.groups.find(g => String(g.id) === String(currentGroupId));
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(currentGrade)) : null;
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'مستر محمد السيد', centerName: 'مستر محمد السيد' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'نظام إدارة الدروس', centerName: 'نظام إدارة الدروس' };
 
     const paymentsRows = todayPayments.map((p, i) => {
         const student = db.students.find(s => s.id === p.studentId);
         return `
             <tr style="${i % 2 === 0 ? 'background:#fafafa;' : ''}">
                 <td style="padding:10px 14px; font-weight:700; color:#1e293b;">${student ? student.name : 'طالب مجهول'}</td>
-                <td style="padding:10px 14px; color:#64748b;">${p.category}</td>
+                <td style="padding:10px 14px; color:#64748b;">${p.category}${p.collectedBy ? `<br><span style="font-size:.72rem; color:#94a3b8;">بواسطة: ${p.collectedBy}</span>` : ''}</td>
                 <td style="padding:10px 14px; text-align:center; font-weight:800; color:#10b981;">${p.amount} ج.م</td>
                 <td style="padding:10px 14px; text-align:center; color:#94a3b8; font-size:0.82rem;">${new Date(p.date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</td>
             </tr>`;
@@ -7129,7 +7288,7 @@ function _printDailyTreasuryCurrentGroup() {
                 .header { text-align:center; background:linear-gradient(135deg,#4f46e5,#7c3aed); color:#fff; padding: 1.6rem 2rem; border-radius: 16px; margin-bottom: 1.5rem; }
                 .header h1 { font-size: 1.6rem; font-weight: 900; }
                 .header p { margin-top: 4px; opacity: 0.9; font-size: 0.95rem; }
-                .summary { display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+                .summary { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
                 .summary-item { text-align:center; padding: 1rem; border-radius: 14px; border-bottom: 4px solid #cbd5e1; background:#f8fafc; }
                 .summary-item span { display:block; font-size: 0.8rem; color:#64748b; margin-bottom: 4px; }
                 .summary-item strong { font-size: 1.4rem; }
@@ -7146,7 +7305,7 @@ function _printDailyTreasuryCurrentGroup() {
         <body>
             <div class="header">
                 <h1>💰 كشف تحصيل اليوم</h1>
-                <p>${profile.centerName || 'مستر محمد السيد'}</p>
+                <p>${profile.centerName || 'سنتر العباقرة'}</p>
                 <p>${todayStrAr}</p>
                 <p>${gradeObj ? gradeObj.name : ''}${groupObj ? ' — ' + groupObj.name : ''}</p>
             </div>
@@ -7157,12 +7316,8 @@ function _printDailyTreasuryCurrentGroup() {
                     <strong style="color:#10b981;">${totalSub} ج.م</strong>
                 </div>
                 <div class="summary-item" style="border-color:#f59e0b;">
-                    <span>مقبوضات الحصة</span>
-                    <strong style="color:#f59e0b;">${totalSession} ج.م</strong>
-                </div>
-                <div class="summary-item" style="border-color:#fb923c;">
                     <span>ملازم / أخرى</span>
-                    <strong style="color:#fb923c;">${totalMisc} ج.م</strong>
+                    <strong style="color:#f59e0b;">${totalMisc} ج.م</strong>
                 </div>
                 <div class="summary-item" style="border-color:#ef4444;">
                     <span>مصروفات</span>
@@ -7191,7 +7346,7 @@ function _printDailyTreasuryCurrentGroup() {
                 </tbody>
             </table>
 
-            <div class="footer">طبع بواسطة مستر محمد السيد | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة نظام إدارة الدروس | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>
     `);
@@ -7204,7 +7359,7 @@ function _printDailyTreasuryCurrentGroup() {
 
 // ── طباعة كشف جميع المجموعات لليوم ──────────────────────────────────
 function _printDailyTreasuryAllGroups() {
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'مستر محمد السيد', centerName: 'مستر محمد السيد' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'نظام إدارة الدروس', centerName: 'نظام إدارة الدروس' };
     const todayStrEn = new Date().toLocaleDateString('en-CA');
     const todayStrAr = new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -7249,7 +7404,7 @@ function _printDailyTreasuryAllGroups() {
             const student = db.students.find(s => s.id === p.studentId);
             return `<tr style="${i % 2 === 0 ? 'background:#fafafa;' : ''}">
                 <td style="padding:8px 12px; font-weight:700;">${student ? student.name : '—'}</td>
-                <td style="padding:8px 12px; color:#64748b;">${p.category}</td>
+                <td style="padding:8px 12px; color:#64748b;">${p.category}${p.collectedBy ? `<br><span style="font-size:.72rem; color:#94a3b8;">بواسطة: ${p.collectedBy}</span>` : ''}</td>
                 <td style="padding:8px 12px; text-align:center; font-weight:800; color:#10b981;">${p.amount} ج.م</td>
                 <td style="padding:8px 12px; text-align:center; color:#94a3b8; font-size:.8rem;">${new Date(p.date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</td>
             </tr>`;
@@ -7325,7 +7480,7 @@ function _printDailyTreasuryAllGroups() {
         <body>
             <div class="main-header">
                 <h1>🖨️ كشف تحصيل جميع المجموعات</h1>
-                <p>${profile.centerName || 'مستر محمد السيد'}</p>
+                <p>${profile.centerName || 'سنتر العباقرة'}</p>
                 <p>${todayStrAr}</p>
             </div>
             <div class="grand-summary">
@@ -7347,7 +7502,7 @@ function _printDailyTreasuryAllGroups() {
                 </div>
             </div>
             ${groupSections}
-            <div class="footer">طبع بواسطة مستر محمد السيد | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة نظام إدارة الدروس | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>`);
     printWindow.document.close();
@@ -7408,7 +7563,7 @@ function printDailyTreasuryReport() {
         <body>
             <div class="header">
                 <h1>تقرير تحصيل الخزنة اليومي</h1>
-                <p>مستر محمد السيد</p>
+                <p>نظام إدارة الدروس</p>
                 <p style="font-weight: 700;">${todayStrAr}</p>
             </div>
             
@@ -7433,7 +7588,7 @@ function printDailyTreasuryReport() {
                 <tbody>${rows}</tbody>
             </table>
             
-            <div class="footer">طبع بواسطة مستر محمد السيد | ${new Date().toLocaleString('ar-EG')}</div>
+            <div class="footer">طبع بواسطة نظام إدارة الدروس | ${new Date().toLocaleString('ar-EG')}</div>
         </body>
         </html>
     `);
@@ -7496,7 +7651,7 @@ function printSessionAttendance() {
                 </tbody>
             </table>
             <footer style="margin-top: 50px; text-align: center; font-size: 0.8rem; color: #666;">
-                تم استخراج التقرير بواسطة مستر محمد السيد - ${new Date().toLocaleString('ar-EG')}
+                تم استخراج التقرير بواسطة نظام إدارة الدروس - ${new Date().toLocaleString('ar-EG')}
             </footer>
         </body>
         </html>
@@ -7574,7 +7729,7 @@ function printArchivedSession(filter = 'all') {
             </div>
 
             <footer style="margin-top: 50px; text-align: center; font-size: 0.8rem; color: #999; border-top: 1px solid #eee; padding-top: 10px;">
-                مستر محمد السيد - أرشيف الجلسات الرقمي | استُخرج بتاريخ: ${new Date().toLocaleString('ar-EG')}
+                نظام إدارة الدروس - أرشيف الجلسات الرقمي | استُخرج بتاريخ: ${new Date().toLocaleString('ar-EG')}
             </footer>
         </body>
         </html>
@@ -7844,7 +7999,8 @@ function collectMonthlyPayment(studentId) {
         year: currentYear,
         date: new Date().toISOString(),
         category: 'اشتراك شهري',
-        cycleId: db.settings.activeCycle
+        cycleId: db.settings.activeCycle,
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     db.payments.push(newPayment);
 
@@ -7887,7 +8043,8 @@ function exemptMonthlyPayment(studentId) {
         date: new Date().toISOString(),
         category: 'اشتراك شهري',
         cycleId: db.settings.activeCycle,
-        isExemption: true
+        isExemption: true,
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     db.payments.push(newPayment);
 
@@ -7935,7 +8092,8 @@ function discountMonthlyPayment(studentId) {
         date: new Date().toISOString(),
         category: 'اشتراك شهري',
         cycleId: db.settings.activeCycle,
-        discount: discount
+        discount: discount,
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     db.payments.push(newPayment);
 
@@ -8084,14 +8242,7 @@ function renderMonthlySubscriptionTables() {
     const paidList = [];
     const unpaidList = [];
 
-    // ✅ طلاب "الاشتراك بالحصة" لا ينتمون لجداول الاشتراك الشهري إطلاقاً —
-    //    لهم لوحتهم المستقلة (SessionSub.renderPanel) فلا نعرضهم هنا حتى لا
-    //    يظهروا دائماً في "لم يتم الدفع" رغم عدم انطباق الاشتراك الشهري عليهم.
-    const monthlyOnlyStudents = groupStudents.filter(s =>
-        !(typeof SessionSub !== 'undefined' && SessionSub.isSessionStudent(s))
-    );
-
-    monthlyOnlyStudents.forEach(s => {
+    groupStudents.forEach(s => {
         const hasPaid = db.payments.some(p =>
             p.studentId == s.id &&
             p.category === 'اشتراك شهري' &&
@@ -8101,19 +8252,11 @@ function renderMonthlySubscriptionTables() {
         else unpaidList.push(s);
     });
 
-    // زر تحويل نوع الاشتراك (شهري → بالحصة) — مُتاح فقط لو SessionSub محمّل
-    const sessionModeSwitchBtn = (s) => (typeof SessionSub !== 'undefined')
-        ? `<button class="btn" onclick="SessionSub.setStudentSubscriptionMode(${s.id}, 'session')" style="background:#fff7ed; color:#f59e0b; padding:4px 10px; font-size:0.7rem; border-radius:50px; border:1px solid #fde68a; font-weight:600;" title="تحويل هذا الطالب لاشتراك بالحصة">
-            <i class="fas fa-coins"></i> تحويل لاشتراك بالحصة
-        </button>`
-        : '';
-
     document.getElementById('paid-students-list').innerHTML = paidList.map(s => `
         <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 0.5rem;"><i class="fas fa-check-circle" style="color:var(--accent)"></i> <strong>${s.name}</strong></td>
             <td style="font-family:monospace; color:var(--text-muted)">${s.qrCode}</td>
-            <td style="text-align:left; padding: 0.5rem; display:flex; gap:5px; justify-content:flex-end; align-items:center;">
-                ${sessionModeSwitchBtn(s)}
+            <td style="text-align:left; padding: 0.5rem;">
                 <button class="btn" onclick="toggleMonthlyPayment(${s.id})" style="background:transparent; color:var(--danger); padding:4px 8px; font-size:1rem; border:none; box-shadow:none;" title="إلغاء الدفع">
                     <i class="fas fa-trash-alt"></i>
                 </button>
@@ -8124,8 +8267,7 @@ function renderMonthlySubscriptionTables() {
     document.getElementById('unpaid-students-list').innerHTML = unpaidList.map(s => `
         <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 0.5rem;"><i class="fas fa-clock" style="color:var(--danger)"></i> <strong>${s.name}</strong></td>
-            <td style="text-align:left; padding: 0.5rem; display:flex; gap:5px; justify-content:flex-end; flex-wrap:wrap;">
-                ${sessionModeSwitchBtn(s)}
+            <td style="text-align:left; padding: 0.5rem; display:flex; gap:5px; justify-content:flex-end;">
                 <button class="btn" onclick="collectMonthlyPayment(${s.id})" style="background:var(--payment-orange); color:white; padding:4px 10px; font-size:0.75rem; border-radius:50px;">
                     تحصيل الآن <i class="fas fa-check"></i>
                 </button>
@@ -8195,21 +8337,23 @@ function renderFinances() {
             category: p.category || 'اشتراك',
             amount: p.amount,
             date: p.date,
-            type: 'income'
+            type: 'income',
+            collectedBy: p.collectedBy
         })),
         ...db.expenses.filter(e => e.groupId == currentGroupId).map(e => ({
             title: e.title,
             category: e.category,
             amount: e.amount,
             date: e.id, // e.id is timestamp
-            type: 'expense'
+            type: 'expense',
+            collectedBy: e.collectedBy
         }))
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     document.getElementById('finances-list').innerHTML = ledger.map(item => `
         <tr>
             <td>${item.title}</td>
-            <td>${item.category}</td>
+            <td>${item.category}${item.collectedBy ? `<br><span style="font-size:.72rem; color:var(--text-muted);"><i class="fas fa-user"></i> ${item.collectedBy}</span>` : ''}</td>
             <td style="color:${item.type === 'income' ? 'var(--accent)' : 'var(--danger)'}; font-weight:bold;">
                 ${item.type === 'income' ? '+' : '-'}${item.amount} ج.م
             </td>
@@ -8373,6 +8517,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
                         <div class="info-item"><label>كود الطالب</label><span>${student.qrCode || '—'}</span></div>
                         <div class="info-item"><label>الصف الدراسي</label><span>${gradeName}</span></div>
                         <div class="info-item"><label>المجموعة</label><span>${groupName}</span></div>
+                        ${payment.collectedBy ? `<div class="info-item"><label>تم التحصيل بواسطة</label><span>${payment.collectedBy}</span></div>` : ''}
                     </div>
 
                     <div class="section-title">📋 تفاصيل المدفوعات</div>
@@ -8443,7 +8588,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
         </head>
         <body>
             <div class="center">
-                <h3 style="margin:5px 0; font-size:15px;">مستر محمد السيد</h3>
+                <h3 style="margin:5px 0; font-size:15px;">سنتر العباقرة</h3>
                 <div style="font-size:11px; color:#555;">${cycleTitle}</div>
             </div>
             <hr>
@@ -8453,6 +8598,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
                 <tr><td class="label">الكود</td><td style="text-align:left;">${student.qrCode || '—'}</td></tr>
                 <tr><td class="label">الصف</td><td style="text-align:left;">${gradeName}</td></tr>
                 <tr><td class="label">التاريخ</td><td style="text-align:left;">${dateStr} ${timeStr}</td></tr>
+                ${payment.collectedBy ? `<tr><td class="label">تم التحصيل بواسطة</td><td style="text-align:left;">${payment.collectedBy}</td></tr>` : ''}
             </table>
             <hr>
             <div class="detail-title">تفاصيل الدفع:</div>
@@ -8586,7 +8732,7 @@ function _buildBulkReceiptCard(payment) {
     const student = db.students.find(s => s.id == payment.studentId);
     if (!student) return '';
 
-    const profile   = (typeof getProgramProfile === 'function') ? getProgramProfile() : { centerName: 'مستر محمد السيد' };
+    const profile   = (typeof getProgramProfile === 'function') ? getProgramProfile() : { centerName: 'نظام إدارة الدروس' };
     const cycleTitle = getReceiptCycleTitle(payment);
     const dateStr    = new Date(payment.date).toLocaleDateString('ar-EG');
     const gradeName  = typeof gradeLabel === 'function' ? gradeLabel(student.grade) : (student.grade || '—');
@@ -8596,7 +8742,7 @@ function _buildBulkReceiptCard(payment) {
     return `
         <div class="bulk-receipt-card">
             <div class="bc-header">
-                <span class="bc-center">${profile.centerName || 'مستر محمد السيد'}</span>
+                <span class="bc-center">${profile.centerName || 'سنتر العباقرة'}</span>
                 <span class="bc-num">#${payment.id}</span>
             </div>
             <div class="bc-row"><span class="bc-label">الطالب</span><span class="bc-value">${student.name}</span></div>
@@ -8736,7 +8882,8 @@ function handleAddExpense() {
         amount: a,
         category: c,
         date: new Date().toISOString(), // Ensure date is stored
-        groupId: currentGroupId
+        groupId: currentGroupId,
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     });
     db.save('expenses');
     renderFinances();
@@ -9207,34 +9354,30 @@ function sendMonthlyReportWhatsApp() {
     const examsAttended = examRows.filter(r => r.status === 'present');
 
     // ── 3. الاشتراك ─────────────────────────────────────────
-    let subStatus;
-    if (typeof SessionSub !== 'undefined' && SessionSub.isSessionStudent(s)) {
-        subStatus = SessionSub.buildWhatsAppSubStatus(s, start, end);
-    } else {
-        const periodPayments = db.payments.filter(p => {
-            if (p.studentId != s.id || p.category !== 'اشتراك شهري') return false;
-            if (p.year && p.month) return (p.year === period.year && (p.month - 1) === period.month);
-            const d = new Date(p.date);
-            return d >= start && d < end;
-        });
-        const latestPayment = periodPayments.sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
+    const periodPayments = db.payments.filter(p => {
+        if (p.studentId != s.id || p.category !== 'اشتراك شهري') return false;
+        if (p.year && p.month) return (p.year === period.year && (p.month - 1) === period.month);
+        const d = new Date(p.date);
+        return d >= start && d < end;
+    });
+    const latestPayment = periodPayments.sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
 
-        if (latestPayment) {
-            subStatus = latestPayment.isExemption ? 'معفى من الاشتراك ✅' : `تم السداد ✅ (${latestPayment.amount} ج.م)`;
-        } else {
-            const now = new Date();
-            const isPast = (period.year < now.getFullYear()) ||
-                (period.year === now.getFullYear() && period.month <= now.getMonth());
-            subStatus = isPast ? 'لم يتم السداد ❌' : 'لم يحن وقت الدفع بعد';
-        }
+    let subStatus;
+    if (latestPayment) {
+        subStatus = latestPayment.isExemption ? 'معفى من الاشتراك ✅' : `تم السداد ✅ (${latestPayment.amount} ج.م)`;
+    } else {
+        const now = new Date();
+        const isPast = (period.year < now.getFullYear()) ||
+            (period.year === now.getFullYear() && period.month <= now.getMonth());
+        subStatus = isPast ? 'لم يتم السداد ❌' : 'لم يحن وقت الدفع بعد';
     }
 
     // ── 4. بناء نص الرسالة ──────────────────────────────────
     const _profileWA = getProgramProfile();
-    // 🔧 الاسم مثبّت دائماً "مستر محمد السيد" — لا يعتمد على الإعدادات المحفوظة
+    // 🔧 الاسم مثبّت دائماً "نظام إدارة الدروس" — لا يعتمد على الإعدادات المحفوظة
     const teacherLine = {
-        name: TEACHER_FIXED_NAME,
-        spec: _profileWA.specialization || 'أستاذ اللغة العربية'
+        name: getTeacherDisplayName(),
+        spec: _profileWA.specialization || 'مدرس اللغة العربية'
     };
     const examsSection = examsAttended.length > 0
         ? examsAttended.map(r => {
@@ -9293,12 +9436,12 @@ function renderMonthlyReportBody() {
     // ✅ إصلاح: نفس منطق sendMonthlyReportWhatsApp — استخدام حدود الدورة
     // الفعلية بدل حساب حدود الشهر الميلادي من جديد.
     const { start, end } = period;
-    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'مستر محمد السيد', centerName: 'مستر محمد السيد' };
+    const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : { teacherName: 'نظام إدارة الدروس', centerName: 'نظام إدارة الدروس' };
     const groupObj = db.groups.find(g => String(g.id) === String(s.groupId));
     const gradeObj = (typeof gradesList !== 'undefined') ? gradesList.find(g => String(g.id) === String(s.grade)) : null;
 
     // ── Header info ──
-    document.getElementById('report-teacher-name').innerText = `المدرّس: ${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ اللغة العربية'}`;
+    document.getElementById('report-teacher-name').innerText = `${getTeacherDisplayName()} — ${profile.specialization || 'مدرس اللغة العربية'}`;
     document.getElementById('report-date-range').innerText = `للفترة: ${period.label}`;
     document.getElementById('rep-st-name').innerText = s.name;
     document.getElementById('rep-st-code').innerText = s.qrCode || '---';
@@ -9394,62 +9537,39 @@ function renderMonthlyReportBody() {
     const examsAbsent = examRows.filter(r => r.status === 'absent');
 
     // ──────────────────────────────────────────────────────
-    // 3) الاشتراك — شهري (كما هو تماماً) أو بالحصة (نفس الشكل بالظبط
-    //    لكن بمنطق مستقل: كل حصة حضرها الطالب = عملية دفع مستقلة)
+    // 3) الاشتراك الشهري لهذا الشهر بالتحديد
+    //    تنبيه: p.month محفوظ بـ 1-based (يناير=1 ... ديسمبر=12)
+    //           period.month محفوظ بـ 0-based (يناير=0 ... ديسمبر=11)
+    //    المقارنة الصحيحة: p.month === period.month + 1
     // ──────────────────────────────────────────────────────
-    const _isSessionReportStudent = (typeof SessionSub !== 'undefined') && SessionSub.isSessionStudent(s);
+    const periodPayments = db.payments.filter(p => {
+        if (p.studentId != s.id || p.category !== 'اشتراك شهري') return false;
+        if (p.year && p.month) return (p.year === period.year && p.month === period.month + 1);
+        const d = new Date(p.date);
+        return d >= start && d < end;
+    });
+    const latestPayment = periodPayments.sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
 
-    let subscriptionHtml;
-
-    if (_isSessionReportStudent) {
-        // ✅ نفس شكل صندوق الاشتراك تماماً، لكن ببيانات الحصص لنفس الفترة المعروضة بالضبط
-        subscriptionHtml = SessionSub.buildSubscriptionBoxHtml(s, start, end);
-    } else {
-        //    تنبيه: p.month محفوظ بـ 1-based (يناير=1 ... ديسمبر=12)
-        //           period.month محفوظ بـ 0-based (يناير=0 ... ديسمبر=11)
-        //    المقارنة الصحيحة: p.month === period.month + 1
-        const periodPayments = db.payments.filter(p => {
-            if (p.studentId != s.id || p.category !== 'اشتراك شهري') return false;
-            if (p.year && p.month) return (p.year === period.year && p.month === period.month + 1);
-            const d = new Date(p.date);
-            return d >= start && d < end;
-        });
-        const latestPayment = periodPayments.sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
-
-        let subscriptionStatusHtml;
-        if (latestPayment) {
-            if (latestPayment.isExemption) {
-                subscriptionStatusHtml = `<span class="rep-badge rep-badge-info">معفى من الاشتراك</span>`;
-            } else {
-                const discountNote = latestPayment.discount ? ` (بعد خصم ${latestPayment.discount} ج.م)` : '';
-                subscriptionStatusHtml = `<span class="rep-badge rep-badge-success">مدفوع: ${latestPayment.amount} ج.م${discountNote}</span>`;
-            }
+    let subscriptionStatusHtml;
+    if (latestPayment) {
+        if (latestPayment.isExemption) {
+            subscriptionStatusHtml = `<span class="rep-badge rep-badge-info">معفى من الاشتراك</span>`;
         } else {
-            const now = new Date();
-            const isPastOrCurrentMonth = (period.year < now.getFullYear()) ||
-                (period.year === now.getFullYear() && period.month <= now.getMonth());
-            subscriptionStatusHtml = isPastOrCurrentMonth
-                ? `<span class="rep-badge rep-badge-danger">لم يتم الدفع — متأخرات</span>`
-                : `<span class="rep-badge rep-badge-muted">لم يحن وقت الدفع بعد</span>`;
+            const discountNote = latestPayment.discount ? ` (بعد خصم ${latestPayment.discount} ج.م)` : '';
+            subscriptionStatusHtml = `<span class="rep-badge rep-badge-success">مدفوع: ${latestPayment.amount} ج.م${discountNote}</span>`;
         }
-        const paymentDateStr = latestPayment ? new Date(latestPayment.date).toLocaleDateString('ar-EG', { day: 'numeric', month: 'long', year: 'numeric' }) : '---';
-
-        subscriptionHtml = `
-            <div class="rep-subscription-box">
-                <div class="rep-sub-row">
-                    <span class="rep-sub-label"><i class="fas fa-wallet"></i> حالة الاشتراك:</span>
-                    ${subscriptionStatusHtml}
-                </div>
-                <div class="rep-sub-row">
-                    <span class="rep-sub-label"><i class="fas fa-calendar-day"></i> تاريخ الدفع:</span>
-                    <span>${paymentDateStr}</span>
-                </div>
-            </div>
-        `;
+    } else {
+        const now = new Date();
+        const isPastOrCurrentMonth = (period.year < now.getFullYear()) ||
+            (period.year === now.getFullYear() && period.month <= now.getMonth());
+        subscriptionStatusHtml = isPastOrCurrentMonth
+            ? `<span class="rep-badge rep-badge-danger">لم يتم الدفع — متأخرات</span>`
+            : `<span class="rep-badge rep-badge-muted">لم يحن وقت الدفع بعد</span>`;
     }
+    const paymentDateStr = latestPayment ? new Date(latestPayment.date).toLocaleDateString('ar-EG', { day: 'numeric', month: 'long', year: 'numeric' }) : '---';
 
     // ──────────────────────────────────────────────────────
-    // بناء HTML للملخص (البطاقات العلوية)
+    // بناء HTML للملخص (البطاقات العلوية) + صندوق الاشتراك
     // ──────────────────────────────────────────────────────
     const summaryHtml = `
         <div class="rep-summary-grid">
@@ -9472,6 +9592,19 @@ function renderMonthlyReportBody() {
                 <div class="rep-stat-icon"><i class="fas fa-user-times"></i></div>
                 <div class="rep-stat-value">${examsAbsent.length}</div>
                 <div class="rep-stat-label">امتحانات غاب عنها</div>
+            </div>
+        </div>
+    `;
+
+    const subscriptionHtml = `
+        <div class="rep-subscription-box">
+            <div class="rep-sub-row">
+                <span class="rep-sub-label"><i class="fas fa-wallet"></i> حالة الاشتراك:</span>
+                ${subscriptionStatusHtml}
+            </div>
+            <div class="rep-sub-row">
+                <span class="rep-sub-label"><i class="fas fa-calendar-day"></i> تاريخ الدفع:</span>
+                <span>${paymentDateStr}</span>
             </div>
         </div>
     `;
@@ -9510,17 +9643,10 @@ function renderMonthlyReportBody() {
             const sessName = a._sessionName
                 ? `<span style="color:var(--text-muted); font-size:.8rem;"> — ${a._sessionName}</span>`
                 : '';
-            let statusCell = 'حضور';
-            if (_isSessionReportStudent) {
-                const paid = a.id && SessionSub.hasAttendancePaid(a.id);
-                statusCell = paid
-                    ? `<span style="color:var(--accent); font-weight:700;">✅ مدفوعة</span>`
-                    : `<span style="color:var(--danger); font-weight:700;">❌ غير مدفوعة</span>`;
-            }
             return `<tr style="background:#f0fdf4;">
                 <td style="color:var(--accent); padding:6px 12px;">✅ حصة ${i + 1}</td>
                 <td colspan="2" style="font-size:0.88rem; padding:6px 12px;">${dateStr}${sessName}</td>
-                <td style="padding:6px 12px;">${statusCell}</td>
+                <td style="padding:6px 12px;">حضور</td>
             </tr>`;
         }).join('');
         reportRows.push(presentRows);
@@ -9532,13 +9658,10 @@ function renderMonthlyReportBody() {
             const sessName = a._sessionName
                 ? `<span style="color:var(--text-muted); font-size:.8rem;"> — ${a._sessionName}</span>`
                 : '';
-            const statusCell = _isSessionReportStudent
-                ? `<span style="color:var(--danger); font-weight:700;">❌ غير مدفوعة</span>`
-                : 'غياب';
             return `<tr style="background:#fff1f2;">
                 <td style="color:var(--danger); padding:6px 12px;">❌ غياب ${i + 1}</td>
                 <td colspan="2" style="font-size:0.88rem; padding:6px 12px;">${dateStr}${sessName}</td>
-                <td style="padding:6px 12px;">${statusCell}</td>
+                <td style="padding:6px 12px;">غياب</td>
             </tr>`;
         }).join('');
         reportRows.push(absentRows);
@@ -9834,10 +9957,7 @@ async function exportData() {
             ls: lsSnapshot,            // كل localStorage
         };
 
-        // 🔧 تنسيق الملف بمسافات وأسطر (indentation) بدل سطر واحد مضغوط،
-        // عشان يبقى الملف قابل للفتح والفحص بسهولة. الحجم هيزيد شوية
-        // لكن الملف هيبقى "مضبوط" ومقروء بدل ما يكون كتلة نص واحدة.
-        const jsonBody = JSON.stringify(snapshot, null, 2);
+        const jsonBody = JSON.stringify(snapshot); // بدون مسافات = أصغر حجم
         const fileContent =
             `/* ALAMIN_BACKUP_V3 | ${new Date().toLocaleString('ar-EG')} | لا تعدل هذا الملف يدوياً */\n` +
             `window.edu_initial_data=${jsonBody};`;
@@ -9906,7 +10026,7 @@ async function importData(input) {
                 console.log('✅ تم قراءة الملف كـ JSON مباشر');
             } catch (_) {}
 
-            // 🔧 محاولة 2: window.edu_initial_data = {...}; (الصيغة القياسية لمستر محمد السيد)
+            // 🔧 محاولة 2: window.edu_initial_data = {...}; (الصيغة القياسية لنظام إدارة الدروس)
             // greedy match لضمان التقاط الـ JSON كاملاً حتى آخر }
             if (!parsedData) {
                 try {
@@ -9972,7 +10092,7 @@ async function importData(input) {
             }
 
             if (!parsedData || typeof parsedData !== 'object') {
-                throw new Error('لم يتم التعرف على صيغة الملف. تأكد أن الملف هو data.js الصادر من مستر محمد السيد.');
+                throw new Error('لم يتم التعرف على صيغة الملف. تأكد أن الملف هو data.js الصادر من نظام إدارة الدروس.');
             }
 
             // ⭐ طباعة معلومات تشخيصية
@@ -10005,7 +10125,7 @@ async function importData(input) {
                 '❌ فشل استيراد النسخة الاحتياطية\n\n' +
                 'السبب: ' + errMsg + '\n\n' +
                 'تأكد من الآتي:\n' +
-                '• الملف هو data.js الذي صدّره مستر محمد السيد مباشرة\n' +
+                '• الملف هو data.js الذي صدّره نظام إدارة الدروس مباشرة\n' +
                 '• اسم الملف لا يهم — data.js أو data (2).js كلها مقبولة\n' +
                 '• لم يتم فتح الملف وتعديله يدوياً\n' +
                 '• حجم الملف أكبر من 1 كيلوبايت'
@@ -10286,51 +10406,68 @@ function initExperienceEnhancements() {
 function getProgramProfile() {
     if (!db._settings.appProfile) {
         db._settings.appProfile = {
-            centerName: 'مستر محمد السيد',
-            teacherName: 'مستر محمد السيد',
-            specialization: 'أستاذ اللغة العربية',
-            phone: ''
+            centerName: 'سنتر العباقرة',
+            teacherName: 'الأستاذ محمد السيد',
+            specialization: 'مدرس اللغة العربية',
+            phone: '',
+            absenceMessage: 'السلام عليكم ورحمة الله وبركاته،\nنحيط سيادتكم علماً بأن الطالب/ـة {StudentName} لم يحضر/تحضر الحصة الدراسية اليوم.\nنرجو التكرم بمتابعة سبب الغياب.',
+            reportMessage: 'السلام عليكم ورحمة الله وبركاته،\nنرفق لسيادتكم تقرير الأداء الشهري للطالب/ـة {StudentName}.\nنسأل الله لابنكم/ابنتكم دوام التوفيق والنجاح.'
         };
     }
-    // ✅ توافق مع الملفات القديمة: تأكد من وجود التخصص دائماً
-    if (!db._settings.appProfile.specialization) {
-        db._settings.appProfile.specialization = 'أستاذ اللغة العربية';
+    // ✅ توافق مع الملفات القديمة: تأكد من وجود الحقول الجديدة دائماً
+    if (!db._settings.appProfile.specialization || db._settings.appProfile.specialization === 'أستاذ الرياضيات') {
+        db._settings.appProfile.specialization = 'مدرس اللغة العربية';
     }
-
-    // 🔧 إصلاح ثابت: اسم المدرّس وتخصصه مثبّتان دائماً على "مستر محمد السيد"
-    // و"أستاذ اللغة العربية" — بغض النظر عن أي قيمة محفوظة سابقاً في
-    // localStorage/IndexedDB (سواء كانت لقب وظيفي خاطئ زي "المشرف"، أو حتى
-    // اسم/تخصص حقيقي مختلف تم إدخاله بالغلط من قبل). العملية دي بتضمن إن
-    // الاسم والتخصص ميظهروش غلط في أي مكان بالتطبيق (التقارير، الواتساب،
-    // شاشة الإعدادات...) حتى لو فيه بيانات قديمة متخزّنة فعليًا.
-    let fixedSomething = false;
-    if (db._settings.appProfile.teacherName !== 'مستر محمد السيد') {
-        db._settings.appProfile.teacherName = 'مستر محمد السيد';
-        fixedSomething = true;
+    if (db._settings.appProfile.absenceMessage === undefined) {
+        db._settings.appProfile.absenceMessage = 'السلام عليكم ورحمة الله وبركاته،\nنحيط سيادتكم علماً بأن الطالب/ـة {StudentName} لم يحضر/تحضر الحصة الدراسية اليوم.\nنرجو التكرم بمتابعة سبب الغياب.';
     }
-    if (db._settings.appProfile.specialization !== 'أستاذ اللغة العربية') {
-        db._settings.appProfile.specialization = 'أستاذ اللغة العربية';
-        fixedSomething = true;
+    if (db._settings.appProfile.reportMessage === undefined) {
+        db._settings.appProfile.reportMessage = 'السلام عليكم ورحمة الله وبركاته،\nنرفق لسيادتكم تقرير الأداء الشهري للطالب/ـة {StudentName}.\nنسأل الله لابنكم/ابنتكم دوام التوفيق والنجاح.';
     }
-    if (fixedSomething) {
-        // احفظ التصحيح فوراً حتى لا يتكرر الخطأ في كل مرة يُفتح فيها التطبيق
-        try { localStorage.setItem('edu_master_settings', JSON.stringify(db._settings)); } catch (e) {}
+    if (!db._settings.appProfile.teacherName || db._settings.appProfile.teacherName === 'نظام إدارة الدروس') {
+        db._settings.appProfile.teacherName = 'الأستاذ محمد السيد';
+    }
+    if (!db._settings.appProfile.centerName) {
+        db._settings.appProfile.centerName = 'سنتر العباقرة';
     }
 
     return db._settings.appProfile;
 }
 
-// نص هوية المدرّس الجاهز للإضافة أسفل أي رسالة (واتساب / SMS)
-// 🔧 إصلاح نهائي: الاسم مثبّت مباشرة "مستر محمد السيد" ولا يعتمد على
-// أي قيمة محفوظة في الإعدادات، حتى لا يظهر أبداً أي لقب خاطئ (مثل "المدير العام")
-// بغض النظر عمّا هو مخزَّن. التخصص وحده قابل للتخصيص من شاشة الإعدادات.
-const TEACHER_FIXED_NAME = 'مستر محمد السيد';
-function getTeacherSignatureLine() {
+/** يعيد اسم المدرس المحفوظ في الإعدادات، أو نص بديل إن لم يُعيَّن */
+function getTeacherDisplayName() {
     const profile = getProgramProfile();
-    const spec = profile.specialization || 'أستاذ اللغة العربية';
-    // توقيع أنيق بخط فاصل يميّز نهاية الرسالة
-    return `\n\n━━━━━━━━━━━━━━\n*${TEACHER_FIXED_NAME}*\n${spec}`;
+    return (profile.teacherName && profile.teacherName.trim()) ? profile.teacherName.trim() : 'الأستاذ محمد السيد';
 }
+
+/** يعيد نص رسالة الغياب بعد استبدال {StudentName} باسم الطالب */
+function buildAbsenceMessageForStudent(studentName) {
+    const profile = getProgramProfile();
+    const template = profile.absenceMessage || 'السلام عليكم،\nالطالب/ـة {StudentName} لم يحضر اليوم.';
+    return template.replace(/\{StudentName\}/g, studentName);
+}
+
+/** يعيد نص رسالة تقرير الأداء بعد استبدال {StudentName} باسم الطالب */
+function buildReportMessageForStudent(studentName) {
+    const profile = getProgramProfile();
+    const template = profile.reportMessage || 'السلام عليكم،\nتقرير أداء الطالب/ـة {StudentName}.';
+    return template.replace(/\{StudentName\}/g, studentName);
+}
+
+// نص هوية النظام الجاهز للإضافة أسفل أي رسالة (واتساب / SMS)
+// ✅ تم تحديثه: الاسم يُقرأ الآن من إعدادات البرنامج (اسم المدرس).
+function getTeacherSignatureLine() {
+    const name = getTeacherDisplayName();
+    const profile = getProgramProfile();
+    const spec = profile.specialization || 'مدرس اللغة العربية';
+    return `\n\n━━━━━━━━━━━━━━\n*${name}*\n${spec}`;
+}
+// للتوافق مع الأكواد القديمة التي تستخدم TEACHER_FIXED_NAME مباشرة
+// يُعاد تعريفه كدالة getter بدلاً من ثابت
+Object.defineProperty(window, 'TEACHER_FIXED_NAME', {
+    get() { return getTeacherDisplayName(); },
+    configurable: true
+});
 
 // ============================================================
 //  نظام موحّد لصياغة رسائل أولياء الأمور — هوية لغوية واحدة للمنصة
@@ -10371,7 +10508,7 @@ function getFinancialEditLog() {
 function _currentEditorLabel() {
     const profile = getProgramProfile();
     const roleLabel = (typeof RBAC !== 'undefined' && RBAC.isAdmin && RBAC.isAdmin()) ? 'المشرف' : 'مستخدم';
-    return `${roleLabel} — ${profile.teacherName || 'مستر محمد السيد'}`;
+    return `${roleLabel} — ${getTeacherDisplayName()}`;
 }
 
 /**
@@ -10410,7 +10547,8 @@ function recordArchivedMonthPayment(cycleId, studentId) {
         date: cycleDate.toISOString(),
         category: 'اشتراك شهري',
         cycleId: cycle.id,
-        archivedEdit: true // ✅ علامة تدل أن هذا السداد تم تسجيله بأثر رجعي من الأرشيف
+        archivedEdit: true, // ✅ علامة تدل أن هذا السداد تم تسجيله بأثر رجعي من الأرشيف
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     db.payments.push(newPayment);
 
@@ -10475,7 +10613,7 @@ function viewFinancialEditLog() {
             th { background:#4f46e5; color:#fff; }
         </style></head><body>
         <h2><i class="fas fa-history"></i> سجل التعديلات المالية على الأرشيف</h2>
-        <div class="sub">${profile.teacherName || 'مستر محمد السيد'} — ${profile.specialization || 'أستاذ اللغة العربية'}</div>
+        <div class="sub">${getTeacherDisplayName()} — ${profile.specialization || 'مدرس اللغة العربية'}</div>
         <table>
             <thead><tr>
                 <th>اسم الطالب</th><th>الشهر / الدورة</th><th>الحالة القديمة</th><th>الحالة الجديدة</th>
@@ -10495,13 +10633,13 @@ function applyProgramProfile() {
     document.title = `${profile.centerName} | نظام الإدارة`;
 
     const logo = document.querySelector('.logo');
-    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'مستر محمد السيد'}`;
+    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'سنتر العباقرة'}`;
 
     const userName = document.querySelector('.user-profile span');
-    if (userName) userName.innerText = profile.teacherName || 'مستر محمد السيد';
+    if (userName) userName.innerText = getTeacherDisplayName();
 
     const userSpec = document.querySelector('.user-profile .user-specialization');
-    if (userSpec) userSpec.innerText = profile.specialization || 'أستاذ اللغة العربية';
+    if (userSpec) userSpec.innerText = profile.specialization || 'مدرس اللغة العربية';
 }
 
 function initProgramSettings() {
@@ -10548,12 +10686,12 @@ function ensureSettingsSection() {
                     <input id="settings-center-name" class="form-input" type="text">
                 </div>
                 <div class="settings-row">
-                    <label for="settings-teacher-name">اسم المستخدم / المدير</label>
-                    <input id="settings-teacher-name" class="form-input" type="text">
+                    <label for="settings-teacher-name">اسم المدرس</label>
+                    <input id="settings-teacher-name" class="form-input" type="text" placeholder="مثال: الأستاذ محمد السيد">
                 </div>
                 <div class="settings-row">
                     <label for="settings-specialization">التخصص / الوظيفة</label>
-                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: أستاذ اللغة العربية">
+                    <input id="settings-specialization" class="form-input" type="text" placeholder="مثال: مدرس اللغة العربية">
                 </div>
                 <div class="settings-row">
                     <label for="settings-phone">رقم التواصل</label>
@@ -10561,6 +10699,23 @@ function ensureSettingsSection() {
                 </div>
                 <button class="btn btn-primary" onclick="saveProgramSettings()">
                     <i class="fas fa-save"></i> حفظ الإعدادات
+                </button>
+            </div>
+
+            <div class="settings-panel" style="grid-column: span 2;">
+                <h3><i class="fas fa-comment-alt"></i> نصوص الرسائل</h3>
+                <div class="settings-row">
+                    <label for="settings-absence-message">نص رسالة الغياب اليومية</label>
+                    <small style="color:var(--text-muted); display:block; margin-bottom:0.5rem;">استخدم <code>{StudentName}</code> ليتم استبداله باسم الطالب تلقائياً عند الإرسال.</small>
+                    <textarea id="settings-absence-message" class="form-input" style="height:130px; resize:vertical; font-size:0.9rem;"></textarea>
+                </div>
+                <div class="settings-row" style="margin-top:1rem;">
+                    <label for="settings-report-message">نص رسالة تقرير الأداء الشهري</label>
+                    <small style="color:var(--text-muted); display:block; margin-bottom:0.5rem;">استخدم <code>{StudentName}</code> ليتم استبداله باسم الطالب تلقائياً عند الإرسال.</small>
+                    <textarea id="settings-report-message" class="form-input" style="height:130px; resize:vertical; font-size:0.9rem;"></textarea>
+                </div>
+                <button class="btn btn-primary" style="margin-top:1rem;" onclick="saveProgramSettings()">
+                    <i class="fas fa-save"></i> حفظ الرسائل
                 </button>
             </div>
 
@@ -10610,11 +10765,15 @@ function ensureSettingsSection() {
                     <button class="btn btn-primary" onclick="openPasswordManagement()">
                         <i class="fas fa-key"></i> إدارة كلمات المرور
                     </button>
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#0ea5e9,#0284c7);" onclick="openEmployeeManagement()">
+                        <i class="fas fa-users-cog"></i> إدارة المستخدمين (الموظفين)
+                    </button>
                     <button class="btn settings-choice" onclick="toggleDayNightMode(); renderProgramSettings();">
                         <i class="fas fa-adjust"></i> تبديل الوضع
                     </button>
                 </div>
                 <p class="settings-note">يمكنك تغيير كلمة مرور الدخول، الخزينة، فك الحماية، وأكواد الموظفين.</p>
+                <p class="settings-note">أضف مستخدمين بأسمائهم (مثل: محمد، أحمد) — سيُطلب من كل موظف اختيار اسمه عند الدخول، ويُسجَّل اسمه تلقائياً مع كل عملية تحصيل مالي.</p>
             </div>
 
             <div class="settings-panel">
@@ -10692,6 +10851,7 @@ function renderProgramSettings() {
     const zoom = document.getElementById('settings-zoom-label');
 
     if (center) center.value = profile.centerName || '';
+    // ✅ اسم المدرس الآن يُقرأ من الإعدادات مباشرة (يعبّئه المدير بنفسه)
     if (teacher) teacher.value = profile.teacherName || '';
     if (specialization) specialization.value = profile.specialization || '';
     if (phone) phone.value = profile.phone || '';
@@ -10699,6 +10859,12 @@ function renderProgramSettings() {
     if (commission) commission.value = db.settings.centerCommissionPercent || 0;
     if (printWidth) printWidth.value = localStorage.getItem('alamin_print_width') || '80mm';
     if (zoom) zoom.innerText = `${Math.round(appZoom * 100)}%`;
+
+    // ✅ تعبئة حقول نصوص الرسائل
+    const absenceMsgEl = document.getElementById('settings-absence-message');
+    const reportMsgEl = document.getElementById('settings-report-message');
+    if (absenceMsgEl) absenceMsgEl.value = profile.absenceMessage || '';
+    if (reportMsgEl) reportMsgEl.value = profile.reportMessage || '';
 
     const activeTheme = normalizeAppTheme(localStorage.getItem(APP_THEME_KEY) || 'morning');
     document.getElementById('settings-morning-btn')?.classList.toggle('active', activeTheme === 'morning');
@@ -10718,10 +10884,17 @@ function renderProgramSettings() {
 
 function saveProgramSettings() {
     const profile = getProgramProfile();
-    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'مستر محمد السيد';
-    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'مستر محمد السيد';
-    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'أستاذ اللغة العربية';
+    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'سنتر العباقرة';
+    // ✅ اسم المدرس يُحفظ من حقل الإدخال مباشرة (يُدخله المدير مرة واحدة)
+    profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'الأستاذ محمد السيد';
+    profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'مدرس اللغة العربية';
     profile.phone = document.getElementById('settings-phone')?.value.trim() || '';
+
+    // ✅ حفظ نصوص الرسائل
+    const absenceMsg = document.getElementById('settings-absence-message')?.value || '';
+    const reportMsg = document.getElementById('settings-report-message')?.value || '';
+    if (absenceMsg) profile.absenceMessage = absenceMsg;
+    if (reportMsg) profile.reportMessage = reportMsg;
 
     const monthlyFee = parseFloat(document.getElementById('settings-monthly-fee')?.value || '0');
     const commission = parseFloat(document.getElementById('settings-commission')?.value || '0');
@@ -10862,7 +11035,7 @@ function printPlatformCourseCards() {
       <div class="grid">
         ${rows.map(item => `
           <div class="card">
-            <div class="title">مستر محمد السيد - كود تفعيل كورس</div>
+            <div class="title">نظام إدارة الدروس - كود تفعيل كورس</div>
             <div class="student">${item.linkedStudentName || 'طالب غير محدد'}</div>
             <div class="meta">${platformGradeLabel(item.grade)} | ${item.courseTitle || '-'}</div>
             <div class="code">${item.code || '-'}</div>
@@ -10876,299 +11049,10 @@ function printPlatformCourseCards() {
     printWindow.document.write(html);
     printWindow.document.close();
 }
-const FIREBASE_MIGRATION_CONFIG_KEY = 'alamin_firebase_migration_config';
-const FIREBASE_MIGRATION_ID_KEY = 'alamin_firebase_migration_id';
-const FIREBASE_MIGRATION_SDK_VERSION = '10.12.5';
-
-function setFirebaseMigrationSummary(message, type = 'info') {
-    const box = document.getElementById('firebase-migration-summary');
-    if (!box) return;
-    const colors = {
-        info: ['#eff6ff', '#1d4ed8'],
-        success: ['#ecfdf5', '#047857'],
-        warning: ['#fffbeb', '#92400e'],
-        error: ['#fef2f2', '#b91c1c'],
-    };
-    const [bg, fg] = colors[type] || colors.info;
-    box.style.display = 'block';
-    box.style.background = bg;
-    box.style.color = fg;
-    box.innerHTML = message;
-}
-
-function parseFirebaseMigrationConfig(rawText) {
-    const raw = String(rawText || '').trim();
-    if (!raw) throw new Error('Firebase config is empty');
-
-    let objectText = raw;
-    const match = raw.match(/firebaseConfig\s*=\s*({[\s\S]*?})\s*;?/);
-    if (match) objectText = match[1];
-
-    let config;
-    try {
-        config = JSON.parse(objectText);
-    } catch (jsonErr) {
-        try {
-            config = Function(`"use strict"; return (${objectText});`)();
-        } catch (evalErr) {
-            throw new Error('Could not read Firebase config. Paste the firebaseConfig object or the full Firebase setup code.');
-        }
-    }
-
-    const required = ['apiKey', 'authDomain', 'projectId', 'appId'];
-    const missing = required.filter(key => !config || !String(config[key] || '').trim());
-    if (missing.length) throw new Error(`Missing Firebase config fields: ${missing.join(', ')}`);
-
-    return {
-        apiKey: String(config.apiKey),
-        authDomain: String(config.authDomain),
-        projectId: String(config.projectId),
-        storageBucket: config.storageBucket ? String(config.storageBucket) : undefined,
-        messagingSenderId: config.messagingSenderId ? String(config.messagingSenderId) : undefined,
-        appId: String(config.appId),
-        measurementId: config.measurementId ? String(config.measurementId) : undefined,
-    };
-}
-
-function getFirebaseMigrationConfigFromUI() {
-    const el = document.getElementById('firebase-migration-config');
-    const config = parseFirebaseMigrationConfig(el?.value || '');
-    localStorage.setItem(FIREBASE_MIGRATION_CONFIG_KEY, el.value.trim());
-    return config;
-}
-
-function sanitizeFirestoreId(value, fallback) {
-    const id = String(value ?? fallback ?? '').trim() || String(Date.now());
-    return id.replace(/[\/\\#?\[\]]/g, '_').slice(0, 1200);
-}
-
-function getFirebaseMigrationId(projectId) {
-    const input = document.getElementById('firebase-migration-id');
-    let id = String(input?.value || '').trim();
-    if (!id) id = localStorage.getItem(FIREBASE_MIGRATION_ID_KEY);
-    if (!id) {
-        id = `${projectId || 'firebase'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        localStorage.setItem(FIREBASE_MIGRATION_ID_KEY, id);
-    }
-    id = sanitizeFirestoreId(id, `${projectId || 'firebase'}_migration`);
-    if (input) input.value = id;
-    return id;
-}
-
-function sanitizeForFirestore(value) {
-    if (value === undefined || value === null) return null;
-    if (value instanceof Date) return value.toISOString();
-    if (Array.isArray(value)) return value.map(sanitizeForFirestore);
-    if (typeof value === 'object') {
-        const out = {};
-        Object.entries(value).forEach(([key, val]) => {
-            if (val !== undefined) out[key] = sanitizeForFirestore(val);
-        });
-        return out;
-    }
-    if (Number.isNaN(value)) return null;
-    return value;
-}
-
-function splitJsonIntoChunks(payload, maxChars = 750000) {
-    const json = JSON.stringify(payload || {});
-    const chunks = [];
-    for (let i = 0; i < json.length; i += maxChars) chunks.push(json.slice(i, i + maxChars));
-    return chunks.length ? chunks : ['{}'];
-}
-
-async function loadFirebaseMigrationSdk() {
-    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_MIGRATION_SDK_VERSION}`;
-    const appSdk = await import(`${base}/firebase-app.js`);
-    const firestoreSdk = await import(`${base}/firebase-firestore.js`);
-    return { ...appSdk, ...firestoreSdk };
-}
-
-async function collectOfflineMigrationSnapshot() {
-    if (!StorageEngine.db) await StorageEngine.init();
-    const fallbackTables = [
-        'students', 'attendance', 'exams', 'scores', 'expenses',
-        'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards',
-        'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions',
-        'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes',
-        'platformCourses', 'platformSubscriptions'
-    ];
-    const tableNames = (StorageEngine.db && StorageEngine.db.objectStoreNames)
-        ? Array.from(new Set([...Array.from(StorageEngine.db.objectStoreNames), ...fallbackTables]))
-        : fallbackTables;
-
-    const tables = {};
-    for (const table of tableNames) {
-        try { tables[table] = await StorageEngine.getAll(table); }
-        catch (err) { tables[table] = []; }
-    }
-
-    const ls = {};
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key === null) continue;
-        const value = localStorage.getItem(key);
-        if (value !== null) ls[key] = value;
-    }
-
-    return {
-        exportedAt: new Date().toISOString(),
-        app: 'alamin-offline-lessons',
-        version: 1,
-        activeGrade: currentGrade || null,
-        activeGroup: currentGroupId || null,
-        settings: db._settings || {},
-        gradesList: gradesList || [],
-        dailyTreasuryLastArchiveDate: db.dailyTreasuryLastArchiveDate || null,
-        ls,
-        tables,
-        tableNames,
-    };
-}
-
-async function writeFirestoreBatch(firestoreSdk, firestoreDb, writes) {
-    if (!writes.length) return;
-    const batch = firestoreSdk.writeBatch(firestoreDb);
-    writes.forEach(({ ref, data }) => batch.set(ref, sanitizeForFirestore(data), { merge: true }));
-    await batch.commit();
-}
-
-async function testFirebaseMigrationConfig() {
-    const btn = document.querySelector('[onclick="testFirebaseMigrationConfig()"]');
-    const oldHtml = btn?.innerHTML;
-    try {
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الفحص...'; }
-        const config = getFirebaseMigrationConfigFromUI();
-        const firebase = await loadFirebaseMigrationSdk();
-        const app = firebase.initializeApp(config, `migration-test-${Date.now()}`);
-        const firestoreDb = firebase.getFirestore(app);
-        const migrationId = getFirebaseMigrationId(config.projectId);
-        await firebase.setDoc(firebase.doc(firestoreDb, 'offline_migrations', migrationId), {
-            projectId: config.projectId,
-            lastConnectionTestAt: new Date().toISOString(),
-            source: 'offline-app',
-        }, { merge: true });
-        setFirebaseMigrationSummary(`تم الاتصال بنجاح بمشروع Firebase: <strong>${config.projectId}</strong><br>معرّف النقل: <strong dir="ltr">${migrationId}</strong>`, 'success');
-        showNotification('تم فحص الاتصال بـ Firebase بنجاح', 'success');
-    } catch (err) {
-        console.error('Firebase migration test failed', err);
-        setFirebaseMigrationSummary(`تعذر الاتصال: ${err.message || err}`, 'error');
-        showNotification('تعذر الاتصال بـ Firebase. راجع الإعدادات وقواعد Firestore.', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
-    }
-}
-
 async function exportStudentsToFirebase() {
+    showNotification('ميزة تصدير الطلاب للمنصة غير متاحة — التطبيق يعمل محلياً بالكامل بدون أي اتصال بالإنترنت', 'info');
     const btn = document.getElementById('btn-export-firebase');
-    const oldHtml = btn?.innerHTML;
-    try {
-        if (!navigator.onLine) {
-            showNotification('افتح الإنترنت أولاً ثم أعد المحاولة', 'warning');
-            return;
-        }
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الرفع...'; }
-
-        const config = getFirebaseMigrationConfigFromUI();
-        const migrationId = getFirebaseMigrationId(config.projectId);
-        setFirebaseMigrationSummary('جاري تجهيز البيانات المحلية للرفع...', 'info');
-
-        const snapshot = await collectOfflineMigrationSnapshot();
-        const firebase = await loadFirebaseMigrationSdk();
-        const app = firebase.initializeApp(config, `offline-migration-${Date.now()}`);
-        const firestoreDb = firebase.getFirestore(app);
-        const migrationRef = firebase.doc(firestoreDb, 'offline_migrations', migrationId);
-
-        const tableCounts = {};
-        snapshot.tableNames.forEach(table => { tableCounts[table] = (snapshot.tables[table] || []).length; });
-        const totalRows = Object.values(tableCounts).reduce((sum, count) => sum + count, 0);
-
-        await firebase.setDoc(migrationRef, sanitizeForFirestore({
-            projectId: config.projectId,
-            migrationId,
-            source: 'offline-app',
-            startedAt: new Date().toISOString(),
-            status: 'running',
-            activeGrade: snapshot.activeGrade,
-            activeGroup: snapshot.activeGroup,
-            tableCounts,
-            totalRows,
-        }), { merge: true });
-
-        let uploadedRows = 0;
-        for (const table of snapshot.tableNames) {
-            const rows = snapshot.tables[table] || [];
-            const writes = [];
-            const usedRowIds = new Set();
-            for (let index = 0; index < rows.length; index++) {
-                const row = rows[index] || {};
-                const baseRowId = sanitizeFirestoreId(row.id ?? row.studentId ?? row.code ?? index, index);
-                const rowId = usedRowIds.has(baseRowId) ? sanitizeFirestoreId(`${baseRowId}_${index}`, index) : baseRowId;
-                usedRowIds.add(rowId);
-                writes.push({
-                    ref: firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'tables', table, 'rows', rowId),
-                    data: { ...row, _sourceTable: table, _rowIndex: index },
-                });
-                if (writes.length === 450) {
-                    await writeFirestoreBatch(firebase, firestoreDb, writes.splice(0));
-                    uploadedRows += 450;
-                    setFirebaseMigrationSummary(`جاري الرفع... ${uploadedRows.toLocaleString()} من ${totalRows.toLocaleString()} سجل`, 'info');
-                }
-            }
-            const pendingCount = writes.length;
-            await writeFirestoreBatch(firebase, firestoreDb, writes);
-            uploadedRows += pendingCount;
-            await firebase.setDoc(
-                firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'tables', table),
-                { name: table, count: rows.length, syncedAt: new Date().toISOString() },
-                { merge: true }
-            );
-            setFirebaseMigrationSummary(`تم رفع جدول <strong>${table}</strong> (${rows.length.toLocaleString()} سجل)<br>الإجمالي: ${uploadedRows.toLocaleString()} من ${totalRows.toLocaleString()}`, 'info');
-        }
-
-        const metaChunks = splitJsonIntoChunks({
-            settings: snapshot.settings,
-            gradesList: snapshot.gradesList,
-            ls: snapshot.ls,
-            dailyTreasuryLastArchiveDate: snapshot.dailyTreasuryLastArchiveDate,
-        });
-        const metaWrites = metaChunks.map((chunk, index) => ({
-            ref: firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'metaChunks', String(index).padStart(4, '0')),
-            data: { index, chunk, totalChunks: metaChunks.length },
-        }));
-        for (let i = 0; i < metaWrites.length; i += 450) {
-            await writeFirestoreBatch(firebase, firestoreDb, metaWrites.slice(i, i + 450));
-        }
-
-        await firebase.setDoc(migrationRef, sanitizeForFirestore({
-            status: 'completed',
-            completedAt: new Date().toISOString(),
-            uploadedRows,
-            metaChunks: metaChunks.length,
-        }), { merge: true });
-
-        localStorage.setItem('alamin_firebase_last_migration', JSON.stringify({
-            projectId: config.projectId,
-            migrationId,
-            uploadedRows,
-            completedAt: new Date().toISOString(),
-        }));
-        setFirebaseMigrationSummary(`تم رفع البيانات بنجاح.<br>المشروع: <strong>${config.projectId}</strong><br>معرّف النقل: <strong dir="ltr">${migrationId}</strong><br>عدد السجلات: <strong>${uploadedRows.toLocaleString()}</strong>`, 'success');
-        showNotification('تم رفع بيانات النسخة الأوفلاين إلى Firebase بنجاح', 'success');
-    } catch (err) {
-        console.error('Firebase migration failed', err);
-        setFirebaseMigrationSummary(`فشل الرفع: ${err.message || err}`, 'error');
-        showNotification('فشل رفع البيانات إلى Firebase. راجع الاتصال وقواعد Firestore.', 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
-    }
-}
-
-function initFirebaseMigrationPanel() {
-    const configEl = document.getElementById('firebase-migration-config');
-    const idEl = document.getElementById('firebase-migration-id');
-    if (configEl && !configEl.value) configEl.value = localStorage.getItem(FIREBASE_MIGRATION_CONFIG_KEY) || '';
-    if (idEl && !idEl.value) idEl.value = localStorage.getItem(FIREBASE_MIGRATION_ID_KEY) || '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-ban"></i> غير متاح'; }
 }
 
 function saveTreasuryArchiveHour(hour) {
@@ -11199,7 +11083,6 @@ window.exportData = exportData;
 window.saveTreasuryArchiveHour = saveTreasuryArchiveHour;
 window.runManualTreasuryArchiveNow = runManualTreasuryArchiveNow;
 window.exportStudentsToFirebase = exportStudentsToFirebase;
-window.testFirebaseMigrationConfig = testFirebaseMigrationConfig;
 window.importData = importData;
 window._archiveDateTreasury = _archiveDateTreasury;
 window.importPlatformCourseCodes = importPlatformCourseCodes;
@@ -11220,7 +11103,6 @@ window.onload = async () => {
     if (typeof initFilters === 'function') initFilters(); // Initialize other filters
     if (typeof initStudentGroups === 'function') initStudentGroups();
     initExperienceEnhancements();
-    initFirebaseMigrationPanel();
 
     // Recover from file if needed (Legacy / Manual Check)
     if (localStorage.length <= 1 && window.edu_initial_data && window.edu_initial_data.db_state) {
@@ -11358,7 +11240,7 @@ const exposures = {
         snapshot.ls = lsSnap;
 
         const dataJsContent = `/**
- * مستر محمد السيد Data Storage File - للبيع والنقل
+ * نظام إدارة الدروس Data Storage File - للبيع والنقل
  * Created: ${new Date().toLocaleString()}
  */
 window.edu_initial_data = ${JSON.stringify(snapshot, null, 4)};`;
@@ -11498,10 +11380,71 @@ function processManualEntry(context) {
 }
 
 // --- 9. ID Cards & Print Codes ---
+const ID_CARD_PRINT_SETTINGS_KEY = 'edu_idcard_print_settings';
+const DEFAULT_ID_CARD_PRINT_SETTINGS = {
+    mode: 'thermal',
+    width: '80',
+    height: '40',
+    font: '14',
+    barcodeHeight: '50'
+};
+let idCardPrintSettingsBound = false;
+
+function getIDCardPrintSettings() {
+    try {
+        return { ...DEFAULT_ID_CARD_PRINT_SETTINGS, ...(JSON.parse(localStorage.getItem(ID_CARD_PRINT_SETTINGS_KEY) || '{}') || {}) };
+    } catch (e) {
+        return { ...DEFAULT_ID_CARD_PRINT_SETTINGS };
+    }
+}
+
+function saveIDCardPrintSettings() {
+    const settings = {
+        mode: document.getElementById('print-type-main')?.value || DEFAULT_ID_CARD_PRINT_SETTINGS.mode,
+        width: document.getElementById('thermal-w')?.value || DEFAULT_ID_CARD_PRINT_SETTINGS.width,
+        height: document.getElementById('thermal-h')?.value || DEFAULT_ID_CARD_PRINT_SETTINGS.height,
+        font: document.getElementById('thermal-font')?.value || DEFAULT_ID_CARD_PRINT_SETTINGS.font,
+        barcodeHeight: document.getElementById('thermal-barcode-h')?.value || DEFAULT_ID_CARD_PRINT_SETTINGS.barcodeHeight
+    };
+    try { localStorage.setItem(ID_CARD_PRINT_SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+    return settings;
+}
+
+function applyIDCardPrintSettings() {
+    const settings = getIDCardPrintSettings();
+    const typeEl = document.getElementById('print-type-main');
+    const widthEl = document.getElementById('thermal-w');
+    const heightEl = document.getElementById('thermal-h');
+    const fontEl = document.getElementById('thermal-font');
+    const barcodeEl = document.getElementById('thermal-barcode-h');
+
+    if (typeEl) typeEl.value = settings.mode;
+    if (widthEl) widthEl.value = settings.width;
+    if (heightEl) heightEl.value = settings.height;
+    if (fontEl) fontEl.value = settings.font;
+    if (barcodeEl) barcodeEl.value = settings.barcodeHeight;
+    toggleThermalOptions(false);
+}
+
+function bindIDCardPrintSettings() {
+    if (idCardPrintSettingsBound) return;
+    const ids = ['print-type-main', 'thermal-w', 'thermal-h', 'thermal-font', 'thermal-barcode-h'];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', saveIDCardPrintSettings);
+        el.addEventListener('input', saveIDCardPrintSettings);
+    });
+    idCardPrintSettingsBound = true;
+}
+
 function initIDCardsSection() {
     const groupSelect = document.getElementById('idcard-group-select');
     const studentSelect = document.getElementById('idcard-student-select');
     if (!groupSelect || !studentSelect) return;
+
+    bindIDCardPrintSettings();
+    applyIDCardPrintSettings();
 
     // Filter by current grade
     const gradeGroups = db.groups.filter(g => g.grade == currentGrade);
@@ -11518,10 +11461,11 @@ function initIDCardsSection() {
         sortedStudents.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
 }
 
-function toggleThermalOptions() {
+function toggleThermalOptions(shouldSave = true) {
     const type = document.getElementById('print-type-main').value;
     const panel = document.getElementById('thermal-config-panel');
     if (panel) panel.style.display = (type === 'thermal') ? 'block' : 'none';
+    if (shouldSave) saveIDCardPrintSettings();
 }
 
 function printGroupCodes() {
@@ -11545,11 +11489,11 @@ function printStudentCode() {
 }
 
 function generatePrintableIDCards(students, mode = 'normal') {
+    saveIDCardPrintSettings();
     const printWindow = window.open('', '_blank');
     const isThermal = mode === 'thermal';
     const profile = (typeof getProgramProfile === 'function') ? getProgramProfile() : {};
-    const teacherName = profile.teacherName || 'مستر محمد السيد';
-    const teacherSpec = profile.specialization || 'أستاذ اللغة العربية';
+    // ملحوظة: تم حذف اسم/تخصص المدرّس من بطاقات الطباعة بناءً على طلب المستخدم
 
     // Get Thermal Config
     const tw = document.getElementById('thermal-w')?.value || 80;
@@ -11563,27 +11507,27 @@ function generatePrintableIDCards(students, mode = 'normal') {
         'body { font-family: "Tajawal", sans-serif; margin: 0; padding: ' + (isThermal ? '0' : '10mm') + '; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }' +
         (isThermal ?
             '@page { size: ' + tw + 'mm ' + th + 'mm; margin: 0; }' +
-            '.page { width: ' + tw + 'mm; min-height: ' + th + 'mm; overflow: visible; page-break-after: always; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; padding: 2mm; }' +
-            '.card { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; overflow: visible; }' +
+            '.page { width: ' + tw + 'mm; height: ' + th + 'mm; overflow: hidden; page-break-after: always; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; padding: 2mm; }' +
+            '.card { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }' +
             '.header-text { font-size: ' + (tFont * 0.85) + 'px; font-weight: 800; margin-bottom: 0; }' +
             '.header-spec { font-size: ' + (tFont * 0.55) + 'px; color: #444; margin-bottom: 3px; }' +
             '.student-name { font-weight: 800; font-size: ' + tFont + 'px; margin-bottom: 2px; }' +
             '.info-row { font-size: ' + (tFont * 0.7) + 'px; margin-bottom: 2px; }' +
-            '.barcode-area { margin-top: 5px; margin-bottom: 3px; width: 100%; display: flex; justify-content: center; overflow: visible; }' +
-            '.barcode { width: 95% !important; max-width: ' + (tw - 10) + 'mm; height: auto !important; overflow: visible; display: block; }'
+            '.barcode-area { margin-top: 5px; width: 100%; display: flex; justify-content: center; }' +
+            '.barcode { width: 95% !important; max-width: ' + (tw - 10) + 'mm; }'
             :
             '.page { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; page-break-after: always; }' +
-            '.card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 0; min-height: 63mm; display: flex; flex-direction: column; position: relative; box-sizing: border-box; background: #fff; page-break-inside: avoid; break-inside: avoid; overflow: visible; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }' +
-            '.card-header { background: linear-gradient(135deg, #4f46e5, #4338ca); color: #fff; padding: 7px 12px; }' +
-            '.card-header .teacher-name { font-weight: 800; font-size: 0.9rem; line-height: 1.25; }' +
-            '.card-header .teacher-spec { font-size: 0.62rem; opacity: 0.9; }' +
-            '.card-body { padding: 8px 12px 10px; display: flex; flex-direction: column; flex: 1; }' +
-            '.info-row { font-size: 0.82rem; margin-bottom: 4px; color: #475569; }' +
+            '.card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 0; height: 55mm; display: flex; flex-direction: column; position: relative; box-sizing: border-box; background: #fff; page-break-inside: avoid; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }' +
+            '.card-header { background: linear-gradient(135deg, #4f46e5, #4338ca); color: #fff; padding: 8px 12px; }' +
+            '.card-header .teacher-name { font-weight: 800; font-size: 0.95rem; line-height: 1.3; margin-bottom: 2px; }' +
+            '.card-header .teacher-spec { font-size: 0.65rem; opacity: 0.9; }' +
+            '.card-body { padding: 10px 12px; display: flex; flex-direction: column; flex: 1; }' +
+            '.info-row { font-size: 0.85rem; margin-bottom: 5px; color: #475569; }' +
             '.info-row b { color: #1e293b; }' +
-            '.barcode-area { margin-top: auto; text-align: center; background: #f8fafc; padding: 6px 4px 8px; border-radius: 5px; overflow: visible; }' +
-            '.barcode { width: 100% !important; height: auto !important; max-width: 100%; overflow: visible; display: block; }' +
-            '.grade-badge { position: absolute; top: 7px; left: 12px; font-size: 0.6rem; background: rgba(255,255,255,0.2); color: #fff; padding: 2px 8px; border-radius: 4px; }' +
-            '@media print { body { padding: 0; } .page { padding: 10mm; overflow: visible; } .card { overflow: visible; } }'
+            '.barcode-area { margin-top: auto; text-align: center; background: #f8fafc; padding: 5px; border-radius: 5px; }' +
+            '.barcode { width: 100% !important; height: auto !important; }' +
+            '.grade-badge { position: absolute; top: 8px; left: 12px; font-size: 0.6rem; background: rgba(255,255,255,0.2); color: #fff; padding: 2px 8px; border-radius: 4px; }' +
+            '@media print { body { padding: 0; } .page { padding: 10mm; } }'
         ) +
         '</style></head><body>';
 
@@ -11595,9 +11539,6 @@ function generatePrintableIDCards(students, mode = 'normal') {
 
             html += '<div class="page">' +
                 '<div class="card">' +
-                '<div class="header-text">' + teacherName + '</div>' +
-                '<div class="header-spec">' + teacherSpec + '</div>' +
-
                 '<div style="font-size: ' + (tFont * 0.7) + 'px; color: #333; margin-bottom: 3px;">' + gradeName + '</div>' +
                 '<div class="student-name">' + s.name + '</div>' +
                 '<div class="info-row">المجموعة: ' + (groupObj ? groupObj.name : '---') + ' | الكود: ' + s.qrCode + '</div>' +
@@ -11613,9 +11554,9 @@ function generatePrintableIDCards(students, mode = 'normal') {
                 '</div>';
         });
     } else {
-        for (let i = 0; i < students.length; i += 8) {
+        for (let i = 0; i < students.length; i += 10) {
             html += '<div class="page">';
-            const chunk = students.slice(i, i + 8);
+            const chunk = students.slice(i, i + 10);
             chunk.forEach(s => {
                 const groupObj = db.groups.find(g => g.id == s.groupId);
                 const gradeObj = gradesList.find(g => g.id == s.grade);
@@ -11623,9 +11564,8 @@ function generatePrintableIDCards(students, mode = 'normal') {
 
                 html += '<div class="card">' +
                     '<div class="card-header">' +
+                    '<div class="teacher-name">سنتر العباقرة</div>' +
                     '<div class="grade-badge">' + gradeName + '</div>' +
-                    '<div class="teacher-name">' + teacherName + '</div>' +
-                    '<div class="teacher-spec">' + teacherSpec + '</div>' +
                     '</div>' +
                     '<div class="card-body">' +
                     '<div style="background: #f8fafc; padding: 8px; border-radius: 6px; margin-bottom: 10px; border-right: 4px solid #4f46e5;">' +
@@ -11656,7 +11596,17 @@ function generatePrintableIDCards(students, mode = 'normal') {
         'function initBarcodes() {' +
         '  if (typeof JsBarcode === "undefined") { setTimeout(initBarcodes, 50); return; }' +
         '  const barcodes = document.querySelectorAll(".barcode");' +
-        '  barcodes.forEach(el => { try { JsBarcode(el).init(); } catch(e){ console.error(e); } });' +
+        '  barcodes.forEach(el => { try {' +
+        '    JsBarcode(el).init();' +
+        '    const w = el.getAttribute("width");' +
+        '    const h = el.getAttribute("height");' +
+        '    if (w && h) {' +
+        '      el.setAttribute("viewBox", "0 0 " + w + " " + h);' +
+        '      el.setAttribute("preserveAspectRatio", "xMidYMid meet");' +
+        '      el.removeAttribute("width");' +
+        '      el.removeAttribute("height");' +
+        '    }' +
+        '  } catch(e){ console.error(e); } });' +
         '  setTimeout(() => { window.print(); window.close(); }, 500);' +
         '}' +
         'window.onload = initBarcodes;' +
@@ -11689,11 +11639,22 @@ function toggleMobileSidebar() {
 
 // 2. Splash Screen Sequencer — مع دعم RBAC
 function checkAppPassword(val) {
-    const adminPass = RBAC.PASSWORDS.admin; // 20062006
-
     // ── إصلاح تسجيل الدخول بدون إنترنت ──
     // يقرأ كلمة المرور من db._settings أولاً، ثم من localStorage كـ fallback
     // هذا يضمن عمل تسجيل الدخول حتى قبل اكتمال تحميل قاعدة البيانات
+    let adminPass = RBAC.PASSWORDS.admin; // القيمة الافتراضية (20062006)
+    if (db._settings && db._settings.globalPasswords && db._settings.globalPasswords.admin) {
+        adminPass = db._settings.globalPasswords.admin;
+    } else {
+        try {
+            const saved = localStorage.getItem('_fallback_passwords');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (parsed && parsed.admin) adminPass = parsed.admin;
+            }
+        } catch(e) {}
+    }
+
     let employeePass = RBAC.PASSWORDS.employee; // القيمة الافتراضية
     if (db._settings && db._settings.globalPasswords && db._settings.globalPasswords.main) {
         employeePass = db._settings.globalPasswords.main;
@@ -11711,47 +11672,30 @@ function checkAppPassword(val) {
     const isEmployee = (val === employeePass);
 
     if (isAdmin || isEmployee) {
-        // ✅ تسجيل دخول ناجح فوراً
+        // ✅ كلمة المرور العامة صحيحة — لكن ما زلنا محتاجين نعرف "مين"
+        // بالتحديد بيدخل (إذا كان نظام المستخدمين مُفعَّلاً) قبل استكمال
+        // الدخول، عشان نقدر نربط أي تحصيل مالي باسمه تلقائياً لاحقًا.
         const role = isAdmin ? 'admin' : 'employee';
         RBAC.login(role);
         RBAC.log('login', role);
 
-        const passwordScreen = document.getElementById('password-screen');
-        const loadingScreen  = document.getElementById('loading-screen');
-        const passwordInput  = document.getElementById('app-password-input');
-        const errorDiv       = document.getElementById('password-error');
-        const successDiv     = document.getElementById('password-success');
-
-        // إخفاء رسالة الخطأ فوراً
+        const errorDiv   = document.getElementById('password-error');
+        const successDiv = document.getElementById('password-success');
         if (errorDiv) errorDiv.style.display = 'none';
-        
-        // إظهار رسالة النجاح فوراً
         if (successDiv) {
             successDiv.style.display = 'block';
             successDiv.innerHTML = `<i class="fas fa-check-circle"></i> تم تسجيل الدخول بنجاح!`;
         }
-        
-        // تعطيل حقل الإدخال
+        const passwordInput = document.getElementById('app-password-input');
         if (passwordInput) passwordInput.disabled = true;
-        if (passwordScreen) passwordScreen.style.display = 'none';
-        if (loadingScreen)  loadingScreen.style.display  = 'block';
 
-        setTimeout(() => {
-            const splash = document.getElementById('app-splash');
-            if (splash) {
-                splash.style.opacity = '0';
-                setTimeout(() => { splash.style.display = 'none'; }, 1000);
-            }
-            RBAC.applyToUI();
-
-            if (typeof startBookingAutoSync === 'function') {
-                setTimeout(startBookingAutoSync, 3000);
-            }
-            // الموظف يروح الحضور مباشرة، المشرف يروح الداشبورد
-            if (role === 'employee') {
-                setTimeout(() => showSection('attendance'), 2200);
-            }
-        }, 2000);
+        if (typeof proceedAfterPasswordSuccess === 'function') {
+            // user-management.js متاح: يقرر هو لو محتاج يعرض شاشة "من أنت؟"
+            setTimeout(() => proceedAfterPasswordSuccess(role), 400);
+        } else {
+            // تحميل قديم بدون user-management.js — نفس السلوك الأصلي تمامًا
+            finishLoginFlow(role);
+        }
     } else {
         // ❌ كلمة مرور خاطئة — فوراً عند عدم التطابق
         const err = document.getElementById('password-error');
@@ -11782,6 +11726,68 @@ function checkAppPassword(val) {
     }
 }
 
+// يُستكمل بعد تحديد هوية الموظف (أو تلقائيًا لو مفيش نظام مستخدمين مُفعَّل)
+function finishLoginFlow(role) {
+    const passwordScreen = document.getElementById('password-screen');
+    const selectScreen   = document.getElementById('employee-select-screen');
+    const loadingScreen  = document.getElementById('loading-screen');
+
+    if (passwordScreen) passwordScreen.style.display = 'none';
+    if (selectScreen)   selectScreen.style.display   = 'none';
+    if (loadingScreen)  loadingScreen.style.display   = 'block';
+
+    setTimeout(() => {
+        const splash = document.getElementById('app-splash');
+        if (splash) {
+            splash.style.opacity = '0';
+            setTimeout(() => { splash.style.display = 'none'; }, 1000);
+        }
+        RBAC.applyToUI();
+
+        if (typeof startBookingAutoSync === 'function') {
+            setTimeout(startBookingAutoSync, 3000);
+        }
+        // الموظف يروح الحضور مباشرة، المشرف يروح الداشبورد
+        if (role === 'employee') {
+            setTimeout(() => showSection('attendance'), 2200);
+        }
+
+        // ── فحص الـ URL: لو فيه ?student=ID → افتح ملف الطالب مباشرة ──
+        // (يُستخدَم عند مسح QR Code الخاص بالطالب من التليفون)
+        const _qrStudentId = new URLSearchParams(window.location.search).get('student');
+        if (_qrStudentId) {
+            const _qrDelay = role === 'employee' ? 3200 : 2600;
+            setTimeout(() => {
+                const sid = isNaN(_qrStudentId) ? _qrStudentId : Number(_qrStudentId);
+                if (typeof viewDetailedProfile === 'function') {
+                    showSection('students');
+                    setTimeout(() => viewDetailedProfile(sid), 500);
+                }
+                // إزالة الـ param من الـ URL بعد الفتح بدون إعادة تحميل الصفحة
+                try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('student');
+                    window.history.replaceState({}, '', url.toString());
+                } catch(e) {}
+            }, _qrDelay);
+        }
+    }, 800);
+}
+window.finishLoginFlow = finishLoginFlow;
+
+async function waitForCloudTableSync(table) {
+    if (typeof CloudSync === 'undefined' || !CloudSync.isReady || !CloudSync.isReady() || !CloudSync.syncTableNow) {
+        return false;
+    }
+    try {
+        await CloudSync.syncTableNow(table);
+        return true;
+    } catch (err) {
+        console.warn('[CloudSync] immediate table sync failed', table, err);
+        return false;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     // ─── إظهار شاشة كلمة المرور فوراً بدون انتظار أي شيء ───
     // هذا يضمن ظهور الشاشة حتى بدون إنترنت عند أول تشغيل
@@ -11801,6 +11807,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             const passwords = db._settings && db._settings.globalPasswords;
             if (passwords) localStorage.setItem('_fallback_passwords', JSON.stringify(passwords));
         } catch(e) {}
+
+        // ── عرض قائمة السكرتارية مباشرة على شاشة الدخول الرئيسية ──
+        // (بجانب كلمة مرور المشرف) لو كان هناك حسابات سكرتير مُضافة
+        try {
+            if (typeof renderSplashSecretaryQuickSelect === 'function') renderSplashSecretaryQuickSelect();
+        } catch(e) {}
+
+        // ── بدء طبقة المزامنة السحابية (Firestore) — لا تمنع تشغيل
+        // النظام لو فشلت أو لو مفيش إنترنت؛ النظام يعمل محليًا زي العادة ──
+        if (typeof CloudSync !== 'undefined') {
+            await CloudSync.init().catch(e => console.warn('[CloudSync] init error', e));
+        }
     } catch (err) {
         // حتى لو فشل التحميل، تبقى شاشة المرور ظاهرة
         // المستخدم يدخل كلمة المرور وتعمل محلياً
@@ -11867,11 +11885,16 @@ async function handleStudentUpdate(printAfter = false) {
     student.parentPhone = parent;
 
     await StorageEngine.save('students', student);
+    const studentCloudOk = await waitForCloudTableSync('students');
 
     const idx = db.students.findIndex(s => s.id == id);
     if (idx !== -1) db.students[idx] = student;
 
-    showNotification('تم تحديث بيانات الطالب بنجاح');
+    if (studentCloudOk) {
+        showNotification('تم تحديث بيانات الطالب في قاعدة البيانات بنجاح', 'success');
+    } else {
+        showNotification('تم تحديث الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات.', 'warning');
+    }
     toggleModal('edit-student-modal', false);
     renderStudents();
 
@@ -11923,7 +11946,7 @@ function printAttendanceSheets() {
     <body>
         <div class="sheet-header">
             <h1>كشوف حضور وغياب الطلاب</h1>
-            <p>مستر محمد السيد</p>
+            <p>نظام إدارة الدروس</p>
             <p>السنة الدراسية: ${gradeName} | تاريخ الطباعة: ${new Date().toLocaleDateString('ar-EG')}</p>
         </div>
     `;
@@ -12011,7 +12034,7 @@ function printStudentsData() {
     <body onload="window.print()">
         <div class="header">
             <h1>سجل بيانات الطلاب التفصيلي</h1>
-            <p>مستر محمد السيد</p>
+            <p>نظام إدارة الدروس</p>
             <p>المرحلة: ${gradeBadge} | إجمالي الطلاب: ${students.length}</p>
         </div>
         <table>
@@ -12071,6 +12094,7 @@ navItems.forEach(item => {
 });
 
 function generatePrintCalibration() {
+    applyIDCardPrintSettings();
     const dummyStudent = {
         name: 'طالب تجريبي (معايرة)',
         qrCode: '1234567890123',
@@ -12078,8 +12102,7 @@ function generatePrintCalibration() {
         groupId: 'test'
     };
     const mode = document.getElementById('print-type-main').value;
-    const thermalWidth = document.getElementById('thermal-width-select')?.value || '80mm';
-    generatePrintableIDCards([dummyStudent], mode, thermalWidth);
+    generatePrintableIDCards([dummyStudent], mode);
 }// --- Shift Management Foundations ---
 let staffStream = null;
 
@@ -12418,11 +12441,16 @@ async function openPasswordManagement() {
     // 1. Ensure settings has the passwords object
     if (!db._settings.globalPasswords) {
         db._settings.globalPasswords = {
+            admin: '20062006',
             main: '2446',
             finance: '4321',
             unlockPayment: '100qwe',
             endSubscription: '01000'
         };
+        db.save();
+    } else if (!db._settings.globalPasswords.admin) {
+        // ترقية بيانات قديمة: أضف كود الأدمن الافتراضي إذا لم يكن محفوظاً بعد
+        db._settings.globalPasswords.admin = '20062006';
         db.save();
     }
 
@@ -12438,13 +12466,14 @@ async function openPasswordManagement() {
     }
 
     const container = document.getElementById('password-management-list');
-    const passwords = db._settings.globalPasswords || { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+    const passwords = db._settings.globalPasswords || { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
 
     let html = `
         <div style="background: #fff8f8; border: 1px solid #fee2e2; padding: 1.5rem; border-radius: 20px; margin-bottom: 1.5rem; box-shadow: var(--shadow-sm);">
             <h4 style="color: var(--danger); margin-bottom: 1rem; font-size: 1.1rem;"><i class="fas fa-lock"></i> كلمات مرور النظام الأساسية</h4>
             <div style="display: grid; gap: 0.8rem;">
-                ${renderPasswordRow('دخول البرنامج الرئيسي', 'main', passwords.main)}
+                ${renderPasswordRow('كود الأدمن (تسجيل دخول المشرف)', 'admin', passwords.admin)}
+                ${renderPasswordRow('كود الموظف (دخول البرنامج الرئيسي)', 'main', passwords.main)}
                 ${renderPasswordRow('الخزينة والمالية', 'finance', passwords.finance)}
                 ${renderPasswordRow('فك حماية حذف العمليات', 'unlockPayment', passwords.unlockPayment)}
                 ${renderPasswordRow('إنهاء اشتراك الشهر', 'endSubscription', passwords.endSubscription)}
@@ -12452,9 +12481,9 @@ async function openPasswordManagement() {
         </div>
 
         <div style="background: #f0fdf4; border: 1px solid #dcfce7; padding: 1.5rem; border-radius: 20px; box-shadow: var(--shadow-sm);">
-            <h4 style="color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem;"><i class="fas fa-user-shield"></i> أكواد دخول الموظفين (Staff)</h4>
+            <h4 style="color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem;"><i class="fas fa-user-shield"></i> أكواد السكرتير (Staff)</h4>
             <div style="display: grid; gap: 0.8rem;">
-                ${(db.staff || []).map(s => renderPasswordRow(`كود الموظف: ${s.name}`, `staff_${s.id}`, s.pin)).join('')}
+                ${(db.staff || []).map(s => renderPasswordRow(`كود السكرتير: ${s.name}`, `staff_${s.id}`, s.pin)).join('')}
             </div>
         </div>
     `;
@@ -12505,7 +12534,7 @@ function verifyOldPassword() {
     } else {
         correctPass = (db._settings.globalPasswords && db._settings.globalPasswords[activePasswordToEdit]) || '';
         if (!correctPass) {
-            const defaults = { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+            const defaults = { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
             correctPass = defaults[activePasswordToEdit];
         }
     }
@@ -12538,7 +12567,7 @@ function updateToNewPassword() {
             return;
         }
     } else {
-        if (!db._settings.globalPasswords) db._settings.globalPasswords = { main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
+        if (!db._settings.globalPasswords) db._settings.globalPasswords = { admin: '20062006', main: '2446', finance: '4321', unlockPayment: '100qwe', endSubscription: '01000' };
         db._settings.globalPasswords[activePasswordToEdit] = newVal;
         db.save();
         // ── حفظ فوري في localStorage للعمل بدون إنترنت ──

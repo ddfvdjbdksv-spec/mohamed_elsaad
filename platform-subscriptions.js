@@ -18,9 +18,9 @@ let platformSubSelectedCourses = [];
 // Helpers
 // ============================================
 
-/** ✅ تم فصل الاتصال بـ Firebase نهائياً — الوحدة دلوقتي أوفلاين بالكامل دايمًا */
+/** ✅ يتحقق من جاهزية Firestore وحالة الاتصال بالإنترنت */
 async function isReallyOnline() {
-    return false;
+    return navigator.onLine && !!(window._firestoreDB || (typeof CloudSync !== 'undefined' && CloudSync.isReady && CloudSync.isReady()));
 }
 
 /** قائمة كورسات المنصة المتاحة للصف الحالي (أو الكل إن لم يوجد صف) */
@@ -83,7 +83,9 @@ async function refreshPlatformCourses() {
 
         // ─── المحاولة 0: platform_data/courses_list (المصدر الحقيقي للمنصة) ───────────────────
         try {
-            const doc = await window.db.collection('platform_data').doc('courses_list').get();
+            const fsDb = window._firestoreDB || (typeof CloudSync !== 'undefined' ? CloudSync.getFirestoreDB() : null);
+            if (!fsDb) throw new Error('Firestore not initialized');
+            const doc = await fsDb.collection('platform_data').doc('courses_list').get();
             if (doc.exists) {
                 const data = doc.data();
                 if (Array.isArray(data.items) && data.items.length > 0) {
@@ -108,7 +110,9 @@ async function refreshPlatformCourses() {
         // ─── المحاولة 1: platform_courses ───────────────────────────
         if (!courses.length) {
             try {
-                const snap1 = await window.db.collection('platform_courses').get();
+                const fsDb = window._firestoreDB || (typeof CloudSync !== 'undefined' ? CloudSync.getFirestoreDB() : null);
+                if (!fsDb) throw new Error('Firestore not initialized');
+                const snap1 = await fsDb.collection('platform_courses').get();
                 if (!snap1.empty) {
                     snap1.forEach(doc => {
                         const d = doc.data();
@@ -134,7 +138,9 @@ async function refreshPlatformCourses() {
         // ─── المحاولة 2: courses ─────────────────────────────────────
         if (!courses.length) {
             try {
-                const snap2 = await window.db.collection('courses').get();
+                const fsDb = window._firestoreDB || (typeof CloudSync !== 'undefined' ? CloudSync.getFirestoreDB() : null);
+                if (!fsDb) throw new Error('Firestore not initialized');
+                const snap2 = await fsDb.collection('courses').get();
                 if (!snap2.empty) {
                     snap2.forEach(doc => {
                         const d = doc.data();
@@ -162,7 +168,9 @@ async function refreshPlatformCourses() {
             console.warn('[COURSES] لا توجد كورسات من Firebase — سيتم البناء من course_codes.');
             // تحديث course_codes من Firebase أولاً
             try {
-                const codesSnap = await window.db.collection('course_codes').get();
+                const fsDb = window._firestoreDB || (typeof CloudSync !== 'undefined' ? CloudSync.getFirestoreDB() : null);
+                if (!fsDb) throw new Error('Firestore not initialized');
+                const codesSnap = await fsDb.collection('course_codes').get();
                 if (!codesSnap.empty) {
                     const freshCodes = [];
                     codesSnap.forEach(doc => freshCodes.push({ id: doc.id, ...doc.data() }));
@@ -300,10 +308,7 @@ function populateCycleCourseSelect() {
 
     if (!courses.length) {
         select.innerHTML = `<option value="">-- لا توجد كورسات، اضغط "تحديث الكورسات" أولاً --</option>`;
-        // جلب تلقائي إذا كان الإنترنت متاحاً
-        if (navigator.onLine && typeof refreshPlatformCourses === 'function') {
-            refreshPlatformCourses().then(() => populateCycleCourseSelect());
-        }
+        // ✅ لا يوجد جلب تلقائي هنا — التحديث يتم فقط يدوياً عبر زر "تحديث الكورسات" / "مزامنة مع المنصة"
         return;
     }
 
@@ -552,7 +557,8 @@ async function confirmSubscriptionSelection(studentId) {
                 year: new Date().getFullYear(),
                 date: new Date().toISOString(),
                 category: 'اشتراك شهري',
-                cycleId: db.settings.activeCycle
+                cycleId: db.settings.activeCycle,
+                collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
             };
             db.payments.push(lessonResult);
         }
@@ -641,7 +647,8 @@ async function recordPlatformSubscription(student, coursesInput) {
         date: now,
         category: 'اشتراك المنصة',
         cycleId: db.settings.activeCycle || 'misc',
-        platformCourses: selectedCourses.map(c => c.courseTitle)
+        platformCourses: selectedCourses.map(c => c.courseTitle),
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     if (selectedCourses.length === 1) {
         financePayment.platformCourseId = selectedCourses[0].courseId;
@@ -872,7 +879,9 @@ async function syncWithPlatform() {
     // ─── الخطوة 3: استلام الأكواد من المنصة ───
     try {
         if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> (3/4) استلام الأكواد...';
-        const codesSnapshot = await window.db.collection('course_codes').get();
+        const fsDb = window._firestoreDB || (typeof CloudSync !== 'undefined' ? CloudSync.getFirestoreDB() : null);
+        if (!fsDb) throw new Error('Firestore not initialized');
+        const codesSnapshot = await fsDb.collection('course_codes').get();
         const imported = [];
         codesSnapshot.forEach(doc => imported.push({ id: doc.id, ...doc.data() }));
         db.courseCodes = imported;
@@ -955,18 +964,11 @@ function showSyncResultsModal(results, errors) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // مزامنة تلقائية عند عودة الاتصال
-    window.addEventListener('online', () => {
-        showNotification('🌐 تم استرجاع الاتصال بالإنترنت. جاري مزامنة الاشتراكات المعلّقة...', 'info');
-        setTimeout(syncPendingPlatformSubscriptions, 1500);
-    });
+    // ✅ تم إلغاء المزامنة التلقائية نهائياً (لا listener على 'online' ولا setInterval دوري).
+    // المزامنة الآن تتم حصرياً عند الضغط اليدوي على أزرار المزامنة المخصصة
+    // (مثل "مزامنة مع المنصة" و "مزامنة الاشتراكات المعلّقة").
 
-    // محاولة مزامنة دورية كل 5 دقائق إن وُجد اتصال
-    platformSubAutoSyncTimer = setInterval(() => {
-        syncPendingPlatformSubscriptions();
-    }, 5 * 60 * 1000);
-
-    // عرض شارة الاشتراكات المعلقة بعد تحميل البيانات
+    // عرض شارة الاشتراكات المعلقة بعد تحميل البيانات (محلي بالكامل، لا يتصل بالشبكة)
     setTimeout(updatePendingSyncBadge, 2000);
 });
 
@@ -1091,7 +1093,8 @@ async function payLessonDirect(studentId) {
         year: new Date().getFullYear(),
         date: new Date().toISOString(),
         category: 'اشتراك شهري',
-        cycleId: db.settings.activeCycle
+        cycleId: db.settings.activeCycle,
+        collectedBy: (typeof EmployeeAuth !== 'undefined') ? EmployeeAuth.getCurrentName() : undefined
     };
     db.payments.push(payment);
     await db.save();
