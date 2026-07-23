@@ -1,7 +1,7 @@
 {
-  "name": "سنتر العباقرة",
-  "short_name": "العباقرة",
-  "description": "نظام سنتر العباقرة المتكامل",
+  "name": "نظام محمد السيد",
+  "short_name": "محمد السيد",
+  "description": "نظام محمد السيد لإدارة الدروس",
   "start_url": "./",
   "display": "standalone",
   "orientation": "any",

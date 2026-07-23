@@ -7,8 +7,8 @@
     <meta name="theme-color" content="#4f46e5">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="سنتر العباقرة">
-    <title>سنتر العباقرة</title>
+    <meta name="apple-mobile-web-app-title" content="نظام محمد السيد">
+    <title>نظام محمد السيد</title>
     <style>
         .search-results-dropdown {
             position: absolute;
@@ -103,7 +103,7 @@
                 <div class="splash-logo" style="margin-bottom: 1.5rem;">
                     <i class="fas fa-university"></i>
                 </div>
-                <h1 class="splash-title">سنتر العباقرة</h1>
+                <h1 class="splash-title">نظام محمد السيد</h1>
                 <p class="splash-subtitle">نظام الإدارة المتكامل</p>
 
                 <div id="password-screen">
@@ -163,7 +163,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
         <div class="logo">
-            <i class="fas fa-book-open"></i> سنتر العباقرة
+            <i class="fas fa-book-open"></i> نظام محمد السيد
         </div>
         <div id="current-grade-badge"
             style="text-align: center; margin-bottom: 1.5rem; padding: 0.5rem; background: var(--bg-light); border-radius: 10px; font-weight: 700; color: var(--primary);">
@@ -3448,7 +3448,7 @@
         <script src="category-system.js"></script>
         <script src="code-generator.js"></script>
         <script src="archive_functions.js?v=5"></script>
-        <script src="app.js?v=10"></script>
+        <script src="app.js?v=11"></script>
         <script src="user-management.js?v=2"></script>
         <script src="firebase-sync.js?v=5"></script>
         <script src="pending-operations-display.js"></script>
@@ -3744,20 +3744,26 @@
         <script>
             /* ── PWA Install Logic ─── */
             let _deferredPrompt = null;
+            function isAppStandalone() {
+                return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+            }
+            function updatePWAInstallButton() {
+                const btn = document.getElementById('pwa-install-btn');
+                if (!btn) return;
+                btn.style.display = isAppStandalone() ? 'none' : 'flex';
+            }
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault();
                 _deferredPrompt = e;
-                const btn = document.getElementById('pwa-install-btn');
-                if (btn) btn.style.display = 'flex';
+                updatePWAInstallButton();
             });
             window.addEventListener('appinstalled', () => {
                 _deferredPrompt = null;
-                const btn = document.getElementById('pwa-install-btn');
-                if (btn) btn.style.display = 'none';
+                updatePWAInstallButton();
             });
             async function triggerPWAInstall() {
                 if (!_deferredPrompt) {
-                    if (window.matchMedia('(display-mode: standalone)').matches) {
+                    if (isAppStandalone()) {
                         alert('التطبيق مثبت بالفعل! ✅');
                     } else {
                         alert('لتثبيت التطبيق يدوياً:\n\nأندرويد Chrome: اضغط ⋮ → "إضافة إلى الشاشة الرئيسية"\nآيفون Safari: اضغط Share → "Add to Home Screen"');
@@ -3770,6 +3776,7 @@
                 const btn = document.getElementById('pwa-install-btn');
                 if (btn) btn.style.display = 'none';
             }
+            updatePWAInstallButton();
         </script>
 
 </body>

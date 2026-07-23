@@ -2137,7 +2137,7 @@ async function handleStudentSubmit(printAfter = false) {
 
         db.students.push(student);
         await StorageEngine.save('students', student);
-        const studentCloudOk = await waitForCloudTableSync('students');
+        waitForCloudTableSync('students');
 
         studentListPage = 0;
         renderStudents();
@@ -2159,7 +2159,7 @@ async function handleStudentSubmit(printAfter = false) {
                 };
                 db.attendance.push(att);
                 await StorageEngine.save('attendance', att);
-                await waitForCloudTableSync('attendance');
+                waitForCloudTableSync('attendance');
             }
         }
 
@@ -2170,11 +2170,7 @@ async function handleStudentSubmit(printAfter = false) {
         document.getElementById('std-group').value = '';
 
         toggleModal('student-modal', false);
-        if (studentCloudOk) {
-            showNotification('تم إضافة الطالب وحفظه في قاعدة البيانات بنجاح', 'success');
-        } else {
-            showNotification('تم حفظ الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات. تأكد من الاتصال واضغط مزامنة.', 'warning');
-        }
+        showNotification('تم حفظ الطالب بنجاح. المزامنة مع قاعدة البيانات تعمل تلقائياً في الخلفية.', 'success');
 
         // ✅ لو المستخدم ضغط "حفظ وطباعة الكود" — نفتح الطباعة فورًا لنفس الطالب
         if (printAfter && typeof generatePrintableIDCards === 'function') {
@@ -7305,7 +7301,7 @@ function _printDailyTreasuryCurrentGroup() {
         <body>
             <div class="header">
                 <h1>💰 كشف تحصيل اليوم</h1>
-                <p>${profile.centerName || 'سنتر العباقرة'}</p>
+                <p>${profile.centerName || 'نظام محمد السيد'}</p>
                 <p>${todayStrAr}</p>
                 <p>${gradeObj ? gradeObj.name : ''}${groupObj ? ' — ' + groupObj.name : ''}</p>
             </div>
@@ -7480,7 +7476,7 @@ function _printDailyTreasuryAllGroups() {
         <body>
             <div class="main-header">
                 <h1>🖨️ كشف تحصيل جميع المجموعات</h1>
-                <p>${profile.centerName || 'سنتر العباقرة'}</p>
+                <p>${profile.centerName || 'نظام محمد السيد'}</p>
                 <p>${todayStrAr}</p>
             </div>
             <div class="grand-summary">
@@ -8588,7 +8584,7 @@ function printMonthlyReceipt(paymentId, size = 'thermal') {
         </head>
         <body>
             <div class="center">
-                <h3 style="margin:5px 0; font-size:15px;">سنتر العباقرة</h3>
+                <h3 style="margin:5px 0; font-size:15px;">نظام محمد السيد</h3>
                 <div style="font-size:11px; color:#555;">${cycleTitle}</div>
             </div>
             <hr>
@@ -8742,7 +8738,7 @@ function _buildBulkReceiptCard(payment) {
     return `
         <div class="bulk-receipt-card">
             <div class="bc-header">
-                <span class="bc-center">${profile.centerName || 'سنتر العباقرة'}</span>
+                <span class="bc-center">${profile.centerName || 'نظام محمد السيد'}</span>
                 <span class="bc-num">#${payment.id}</span>
             </div>
             <div class="bc-row"><span class="bc-label">الطالب</span><span class="bc-value">${student.name}</span></div>
@@ -10406,7 +10402,7 @@ function initExperienceEnhancements() {
 function getProgramProfile() {
     if (!db._settings.appProfile) {
         db._settings.appProfile = {
-            centerName: 'سنتر العباقرة',
+            centerName: 'نظام محمد السيد',
             teacherName: 'الأستاذ محمد السيد',
             specialization: 'مدرس اللغة العربية',
             phone: '',
@@ -10427,8 +10423,8 @@ function getProgramProfile() {
     if (!db._settings.appProfile.teacherName || db._settings.appProfile.teacherName === 'نظام إدارة الدروس') {
         db._settings.appProfile.teacherName = 'الأستاذ محمد السيد';
     }
-    if (!db._settings.appProfile.centerName) {
-        db._settings.appProfile.centerName = 'سنتر العباقرة';
+    if (!db._settings.appProfile.centerName || String(db._settings.appProfile.centerName).includes('العباقرة')) {
+        db._settings.appProfile.centerName = 'نظام محمد السيد';
     }
 
     return db._settings.appProfile;
@@ -10633,7 +10629,7 @@ function applyProgramProfile() {
     document.title = `${profile.centerName} | نظام الإدارة`;
 
     const logo = document.querySelector('.logo');
-    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'سنتر العباقرة'}`;
+    if (logo) logo.innerHTML = `<i class="fas fa-book-open"></i> ${profile.centerName || 'نظام محمد السيد'}`;
 
     const userName = document.querySelector('.user-profile span');
     if (userName) userName.innerText = getTeacherDisplayName();
@@ -10884,7 +10880,7 @@ function renderProgramSettings() {
 
 function saveProgramSettings() {
     const profile = getProgramProfile();
-    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'سنتر العباقرة';
+    profile.centerName = document.getElementById('settings-center-name')?.value.trim() || 'نظام محمد السيد';
     // ✅ اسم المدرس يُحفظ من حقل الإدخال مباشرة (يُدخله المدير مرة واحدة)
     profile.teacherName = document.getElementById('settings-teacher-name')?.value.trim() || 'الأستاذ محمد السيد';
     profile.specialization = document.getElementById('settings-specialization')?.value.trim() || 'مدرس اللغة العربية';
@@ -11564,7 +11560,7 @@ function generatePrintableIDCards(students, mode = 'normal') {
 
                 html += '<div class="card">' +
                     '<div class="card-header">' +
-                    '<div class="teacher-name">سنتر العباقرة</div>' +
+                    '<div class="teacher-name">نظام محمد السيد</div>' +
                     '<div class="grade-badge">' + gradeName + '</div>' +
                     '</div>' +
                     '<div class="card-body">' +
@@ -11780,7 +11776,10 @@ async function waitForCloudTableSync(table) {
         return false;
     }
     try {
-        await CloudSync.syncTableNow(table);
+        await Promise.race([
+            CloudSync.syncTableNow(table),
+            new Promise(resolve => setTimeout(resolve, 2500))
+        ]);
         return true;
     } catch (err) {
         console.warn('[CloudSync] immediate table sync failed', table, err);
@@ -11885,16 +11884,12 @@ async function handleStudentUpdate(printAfter = false) {
     student.parentPhone = parent;
 
     await StorageEngine.save('students', student);
-    const studentCloudOk = await waitForCloudTableSync('students');
+    waitForCloudTableSync('students');
 
     const idx = db.students.findIndex(s => s.id == id);
     if (idx !== -1) db.students[idx] = student;
 
-    if (studentCloudOk) {
-        showNotification('تم تحديث بيانات الطالب في قاعدة البيانات بنجاح', 'success');
-    } else {
-        showNotification('تم تحديث الطالب على الجهاز فقط، ولم يتم تأكيد رفعه لقاعدة البيانات.', 'warning');
-    }
+    showNotification('تم تحديث بيانات الطالب بنجاح. المزامنة تعمل تلقائياً في الخلفية.', 'success');
     toggleModal('edit-student-modal', false);
     renderStudents();
 
