@@ -827,6 +827,14 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
         if (row?.id !== undefined && row?.id !== null) byId.set(String(row.id), row);
     });
 
+    // 🔧 إصلاح جوهري: كنا نفتح IndexedDB transaction منفصلة لكل سجل عبر
+    // await داخل الحلقة — ده كان بيسبب "تعليق" الاستعادة على شاشة "جاري القراءة"
+    // لدقائق طويلة مع الجداول الكبيرة (آلاف سجلات الحضور/المدفوعات)، خصوصاً على
+    // أجهزة أضعف. الآن نجمّع كل السجلات في مصفوفة واحدة ونحفظها دفعة واحدة عبر
+    // StorageEngine.save (اللي بيقسّمها تلقائياً لدفعات 5000 سجل/transaction) —
+    // أسرع بعشرات أو مئات المرّات.
+    const toSave = [];
+
     for (const incoming of incomingRows) {
         if (!incoming || typeof incoming !== 'object') {
             skipped++;
@@ -844,12 +852,12 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
                 groupIdRemap[String(incoming.id)] = String(current.id);
                 // ندمج لكن نحتفظ بالـ id المحلي
                 const merged = Object.assign({}, incoming, current); // current يكسب الـ id
-                await StorageEngine.save(table, merged);
+                toSave.push(merged);
                 byId.set(String(current.id), merged);
                 byIdentity.set(identity, merged);
             } else {
                 const merged = Object.assign({}, current, incoming);
-                await StorageEngine.save(table, merged);
+                toSave.push(merged);
                 if (merged.id !== undefined && merged.id !== null) byId.set(String(merged.id), merged);
                 if (identity) byIdentity.set(identity, merged);
             }
@@ -864,17 +872,21 @@ async function mergeTableWithoutDuplicates(table, incomingRows) {
         const idKey = String(incoming.id);
         if (byId.has(idKey)) {
             const merged = Object.assign({}, byId.get(idKey), incoming);
-            await StorageEngine.save(table, merged);
+            toSave.push(merged);
             byId.set(idKey, merged);
             updated++;
         } else {
-            await StorageEngine.save(table, incoming);
+            toSave.push(incoming);
             byId.set(idKey, incoming);
             added++;
         }
 
         const newIdentity = buildRecordIdentity(table, incoming);
         if (newIdentity) byIdentity.set(newIdentity, incoming);
+    }
+
+    if (toSave.length > 0) {
+        await StorageEngine.save(table, toSave);
     }
 
     // ── بعد دمج المجموعات: أعد ربط الطلاب إن تغيّرت أي IDs ──────
@@ -1040,6 +1052,9 @@ async function hydrateDatabase(dataBlob) {
 
             if (dataArray && Array.isArray(dataArray) && dataArray.length > 0) {
                 console.log(`⏳ استيراد جدول "${table}"... (${dataArray.length} عنصر)`);
+                // 🔧 تحديث الرسالة الظاهرة للمستخدم لكل جدول، حتى لا تبقى شاشة
+                // "جاري القراءة" ثابتة بلا حركة أثناء استيراد الجداول الكبيرة
+                showNotification(`⏳ جاري استيراد "${table}"... (${dataArray.length.toLocaleString()} سجل)`, 'info');
                 const result = await mergeTableWithoutDuplicates(table, dataArray);
                 if (result.added > 0 || result.updated > 0) tablesImported++;
                 totalAdded += result.added;
@@ -9819,7 +9834,10 @@ async function exportData() {
             ls: lsSnapshot,            // كل localStorage
         };
 
-        const jsonBody = JSON.stringify(snapshot); // بدون مسافات = أصغر حجم
+        // 🔧 تنسيق الملف بمسافات وأسطر (indentation) بدل سطر واحد مضغوط،
+        // عشان يبقى الملف قابل للفتح والفحص بسهولة. الحجم هيزيد شوية
+        // لكن الملف هيبقى "مضبوط" ومقروء بدل ما يكون كتلة نص واحدة.
+        const jsonBody = JSON.stringify(snapshot, null, 2);
         const fileContent =
             `/* ALAMIN_BACKUP_V3 | ${new Date().toLocaleString('ar-EG')} | لا تعدل هذا الملف يدوياً */\n` +
             `window.edu_initial_data=${jsonBody};`;
@@ -10858,10 +10876,299 @@ function printPlatformCourseCards() {
     printWindow.document.write(html);
     printWindow.document.close();
 }
+const FIREBASE_MIGRATION_CONFIG_KEY = 'alamin_firebase_migration_config';
+const FIREBASE_MIGRATION_ID_KEY = 'alamin_firebase_migration_id';
+const FIREBASE_MIGRATION_SDK_VERSION = '10.12.5';
+
+function setFirebaseMigrationSummary(message, type = 'info') {
+    const box = document.getElementById('firebase-migration-summary');
+    if (!box) return;
+    const colors = {
+        info: ['#eff6ff', '#1d4ed8'],
+        success: ['#ecfdf5', '#047857'],
+        warning: ['#fffbeb', '#92400e'],
+        error: ['#fef2f2', '#b91c1c'],
+    };
+    const [bg, fg] = colors[type] || colors.info;
+    box.style.display = 'block';
+    box.style.background = bg;
+    box.style.color = fg;
+    box.innerHTML = message;
+}
+
+function parseFirebaseMigrationConfig(rawText) {
+    const raw = String(rawText || '').trim();
+    if (!raw) throw new Error('Firebase config is empty');
+
+    let objectText = raw;
+    const match = raw.match(/firebaseConfig\s*=\s*({[\s\S]*?})\s*;?/);
+    if (match) objectText = match[1];
+
+    let config;
+    try {
+        config = JSON.parse(objectText);
+    } catch (jsonErr) {
+        try {
+            config = Function(`"use strict"; return (${objectText});`)();
+        } catch (evalErr) {
+            throw new Error('Could not read Firebase config. Paste the firebaseConfig object or the full Firebase setup code.');
+        }
+    }
+
+    const required = ['apiKey', 'authDomain', 'projectId', 'appId'];
+    const missing = required.filter(key => !config || !String(config[key] || '').trim());
+    if (missing.length) throw new Error(`Missing Firebase config fields: ${missing.join(', ')}`);
+
+    return {
+        apiKey: String(config.apiKey),
+        authDomain: String(config.authDomain),
+        projectId: String(config.projectId),
+        storageBucket: config.storageBucket ? String(config.storageBucket) : undefined,
+        messagingSenderId: config.messagingSenderId ? String(config.messagingSenderId) : undefined,
+        appId: String(config.appId),
+        measurementId: config.measurementId ? String(config.measurementId) : undefined,
+    };
+}
+
+function getFirebaseMigrationConfigFromUI() {
+    const el = document.getElementById('firebase-migration-config');
+    const config = parseFirebaseMigrationConfig(el?.value || '');
+    localStorage.setItem(FIREBASE_MIGRATION_CONFIG_KEY, el.value.trim());
+    return config;
+}
+
+function sanitizeFirestoreId(value, fallback) {
+    const id = String(value ?? fallback ?? '').trim() || String(Date.now());
+    return id.replace(/[\/\\#?\[\]]/g, '_').slice(0, 1200);
+}
+
+function getFirebaseMigrationId(projectId) {
+    const input = document.getElementById('firebase-migration-id');
+    let id = String(input?.value || '').trim();
+    if (!id) id = localStorage.getItem(FIREBASE_MIGRATION_ID_KEY);
+    if (!id) {
+        id = `${projectId || 'firebase'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        localStorage.setItem(FIREBASE_MIGRATION_ID_KEY, id);
+    }
+    id = sanitizeFirestoreId(id, `${projectId || 'firebase'}_migration`);
+    if (input) input.value = id;
+    return id;
+}
+
+function sanitizeForFirestore(value) {
+    if (value === undefined || value === null) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map(sanitizeForFirestore);
+    if (typeof value === 'object') {
+        const out = {};
+        Object.entries(value).forEach(([key, val]) => {
+            if (val !== undefined) out[key] = sanitizeForFirestore(val);
+        });
+        return out;
+    }
+    if (Number.isNaN(value)) return null;
+    return value;
+}
+
+function splitJsonIntoChunks(payload, maxChars = 750000) {
+    const json = JSON.stringify(payload || {});
+    const chunks = [];
+    for (let i = 0; i < json.length; i += maxChars) chunks.push(json.slice(i, i + maxChars));
+    return chunks.length ? chunks : ['{}'];
+}
+
+async function loadFirebaseMigrationSdk() {
+    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_MIGRATION_SDK_VERSION}`;
+    const appSdk = await import(`${base}/firebase-app.js`);
+    const firestoreSdk = await import(`${base}/firebase-firestore.js`);
+    return { ...appSdk, ...firestoreSdk };
+}
+
+async function collectOfflineMigrationSnapshot() {
+    if (!StorageEngine.db) await StorageEngine.init();
+    const fallbackTables = [
+        'students', 'attendance', 'exams', 'scores', 'expenses',
+        'handouts', 'studentHandouts', 'materials', 'quizzes', 'rewards',
+        'payments', 'waQueue', 'groups', 'cycles', 'absenceSessions',
+        'dailyTreasuryArchives', 'staff', 'shifts', 'courseCodes',
+        'platformCourses', 'platformSubscriptions'
+    ];
+    const tableNames = (StorageEngine.db && StorageEngine.db.objectStoreNames)
+        ? Array.from(new Set([...Array.from(StorageEngine.db.objectStoreNames), ...fallbackTables]))
+        : fallbackTables;
+
+    const tables = {};
+    for (const table of tableNames) {
+        try { tables[table] = await StorageEngine.getAll(table); }
+        catch (err) { tables[table] = []; }
+    }
+
+    const ls = {};
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key === null) continue;
+        const value = localStorage.getItem(key);
+        if (value !== null) ls[key] = value;
+    }
+
+    return {
+        exportedAt: new Date().toISOString(),
+        app: 'alamin-offline-lessons',
+        version: 1,
+        activeGrade: currentGrade || null,
+        activeGroup: currentGroupId || null,
+        settings: db._settings || {},
+        gradesList: gradesList || [],
+        dailyTreasuryLastArchiveDate: db.dailyTreasuryLastArchiveDate || null,
+        ls,
+        tables,
+        tableNames,
+    };
+}
+
+async function writeFirestoreBatch(firestoreSdk, firestoreDb, writes) {
+    if (!writes.length) return;
+    const batch = firestoreSdk.writeBatch(firestoreDb);
+    writes.forEach(({ ref, data }) => batch.set(ref, sanitizeForFirestore(data), { merge: true }));
+    await batch.commit();
+}
+
+async function testFirebaseMigrationConfig() {
+    const btn = document.querySelector('[onclick="testFirebaseMigrationConfig()"]');
+    const oldHtml = btn?.innerHTML;
+    try {
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الفحص...'; }
+        const config = getFirebaseMigrationConfigFromUI();
+        const firebase = await loadFirebaseMigrationSdk();
+        const app = firebase.initializeApp(config, `migration-test-${Date.now()}`);
+        const firestoreDb = firebase.getFirestore(app);
+        const migrationId = getFirebaseMigrationId(config.projectId);
+        await firebase.setDoc(firebase.doc(firestoreDb, 'offline_migrations', migrationId), {
+            projectId: config.projectId,
+            lastConnectionTestAt: new Date().toISOString(),
+            source: 'offline-app',
+        }, { merge: true });
+        setFirebaseMigrationSummary(`تم الاتصال بنجاح بمشروع Firebase: <strong>${config.projectId}</strong><br>معرّف النقل: <strong dir="ltr">${migrationId}</strong>`, 'success');
+        showNotification('تم فحص الاتصال بـ Firebase بنجاح', 'success');
+    } catch (err) {
+        console.error('Firebase migration test failed', err);
+        setFirebaseMigrationSummary(`تعذر الاتصال: ${err.message || err}`, 'error');
+        showNotification('تعذر الاتصال بـ Firebase. راجع الإعدادات وقواعد Firestore.', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
+    }
+}
+
 async function exportStudentsToFirebase() {
-    showNotification('ميزة تصدير الطلاب للمنصة غير متاحة — التطبيق يعمل محلياً بالكامل بدون أي اتصال بالإنترنت', 'info');
     const btn = document.getElementById('btn-export-firebase');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-ban"></i> غير متاح'; }
+    const oldHtml = btn?.innerHTML;
+    try {
+        if (!navigator.onLine) {
+            showNotification('افتح الإنترنت أولاً ثم أعد المحاولة', 'warning');
+            return;
+        }
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الرفع...'; }
+
+        const config = getFirebaseMigrationConfigFromUI();
+        const migrationId = getFirebaseMigrationId(config.projectId);
+        setFirebaseMigrationSummary('جاري تجهيز البيانات المحلية للرفع...', 'info');
+
+        const snapshot = await collectOfflineMigrationSnapshot();
+        const firebase = await loadFirebaseMigrationSdk();
+        const app = firebase.initializeApp(config, `offline-migration-${Date.now()}`);
+        const firestoreDb = firebase.getFirestore(app);
+        const migrationRef = firebase.doc(firestoreDb, 'offline_migrations', migrationId);
+
+        const tableCounts = {};
+        snapshot.tableNames.forEach(table => { tableCounts[table] = (snapshot.tables[table] || []).length; });
+        const totalRows = Object.values(tableCounts).reduce((sum, count) => sum + count, 0);
+
+        await firebase.setDoc(migrationRef, sanitizeForFirestore({
+            projectId: config.projectId,
+            migrationId,
+            source: 'offline-app',
+            startedAt: new Date().toISOString(),
+            status: 'running',
+            activeGrade: snapshot.activeGrade,
+            activeGroup: snapshot.activeGroup,
+            tableCounts,
+            totalRows,
+        }), { merge: true });
+
+        let uploadedRows = 0;
+        for (const table of snapshot.tableNames) {
+            const rows = snapshot.tables[table] || [];
+            const writes = [];
+            const usedRowIds = new Set();
+            for (let index = 0; index < rows.length; index++) {
+                const row = rows[index] || {};
+                const baseRowId = sanitizeFirestoreId(row.id ?? row.studentId ?? row.code ?? index, index);
+                const rowId = usedRowIds.has(baseRowId) ? sanitizeFirestoreId(`${baseRowId}_${index}`, index) : baseRowId;
+                usedRowIds.add(rowId);
+                writes.push({
+                    ref: firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'tables', table, 'rows', rowId),
+                    data: { ...row, _sourceTable: table, _rowIndex: index },
+                });
+                if (writes.length === 450) {
+                    await writeFirestoreBatch(firebase, firestoreDb, writes.splice(0));
+                    uploadedRows += 450;
+                    setFirebaseMigrationSummary(`جاري الرفع... ${uploadedRows.toLocaleString()} من ${totalRows.toLocaleString()} سجل`, 'info');
+                }
+            }
+            const pendingCount = writes.length;
+            await writeFirestoreBatch(firebase, firestoreDb, writes);
+            uploadedRows += pendingCount;
+            await firebase.setDoc(
+                firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'tables', table),
+                { name: table, count: rows.length, syncedAt: new Date().toISOString() },
+                { merge: true }
+            );
+            setFirebaseMigrationSummary(`تم رفع جدول <strong>${table}</strong> (${rows.length.toLocaleString()} سجل)<br>الإجمالي: ${uploadedRows.toLocaleString()} من ${totalRows.toLocaleString()}`, 'info');
+        }
+
+        const metaChunks = splitJsonIntoChunks({
+            settings: snapshot.settings,
+            gradesList: snapshot.gradesList,
+            ls: snapshot.ls,
+            dailyTreasuryLastArchiveDate: snapshot.dailyTreasuryLastArchiveDate,
+        });
+        const metaWrites = metaChunks.map((chunk, index) => ({
+            ref: firebase.doc(firestoreDb, 'offline_migrations', migrationId, 'metaChunks', String(index).padStart(4, '0')),
+            data: { index, chunk, totalChunks: metaChunks.length },
+        }));
+        for (let i = 0; i < metaWrites.length; i += 450) {
+            await writeFirestoreBatch(firebase, firestoreDb, metaWrites.slice(i, i + 450));
+        }
+
+        await firebase.setDoc(migrationRef, sanitizeForFirestore({
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            uploadedRows,
+            metaChunks: metaChunks.length,
+        }), { merge: true });
+
+        localStorage.setItem('alamin_firebase_last_migration', JSON.stringify({
+            projectId: config.projectId,
+            migrationId,
+            uploadedRows,
+            completedAt: new Date().toISOString(),
+        }));
+        setFirebaseMigrationSummary(`تم رفع البيانات بنجاح.<br>المشروع: <strong>${config.projectId}</strong><br>معرّف النقل: <strong dir="ltr">${migrationId}</strong><br>عدد السجلات: <strong>${uploadedRows.toLocaleString()}</strong>`, 'success');
+        showNotification('تم رفع بيانات النسخة الأوفلاين إلى Firebase بنجاح', 'success');
+    } catch (err) {
+        console.error('Firebase migration failed', err);
+        setFirebaseMigrationSummary(`فشل الرفع: ${err.message || err}`, 'error');
+        showNotification('فشل رفع البيانات إلى Firebase. راجع الاتصال وقواعد Firestore.', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
+    }
+}
+
+function initFirebaseMigrationPanel() {
+    const configEl = document.getElementById('firebase-migration-config');
+    const idEl = document.getElementById('firebase-migration-id');
+    if (configEl && !configEl.value) configEl.value = localStorage.getItem(FIREBASE_MIGRATION_CONFIG_KEY) || '';
+    if (idEl && !idEl.value) idEl.value = localStorage.getItem(FIREBASE_MIGRATION_ID_KEY) || '';
 }
 
 function saveTreasuryArchiveHour(hour) {
@@ -10892,6 +11199,7 @@ window.exportData = exportData;
 window.saveTreasuryArchiveHour = saveTreasuryArchiveHour;
 window.runManualTreasuryArchiveNow = runManualTreasuryArchiveNow;
 window.exportStudentsToFirebase = exportStudentsToFirebase;
+window.testFirebaseMigrationConfig = testFirebaseMigrationConfig;
 window.importData = importData;
 window._archiveDateTreasury = _archiveDateTreasury;
 window.importPlatformCourseCodes = importPlatformCourseCodes;
@@ -10912,6 +11220,7 @@ window.onload = async () => {
     if (typeof initFilters === 'function') initFilters(); // Initialize other filters
     if (typeof initStudentGroups === 'function') initStudentGroups();
     initExperienceEnhancements();
+    initFirebaseMigrationPanel();
 
     // Recover from file if needed (Legacy / Manual Check)
     if (localStorage.length <= 1 && window.edu_initial_data && window.edu_initial_data.db_state) {
@@ -12292,4 +12601,3 @@ async function diagnoseStaffAuth(testPin = null) {
 }
 
 window.diagnoseStaffAuth = diagnoseStaffAuth;
-
